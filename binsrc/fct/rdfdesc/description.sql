@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2019 OpenLink Software
+--  Copyright (C) 1998-2021 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -852,24 +852,18 @@ create procedure b3s_label (in _S any, in langs any, in lbl_order_pref_id int :=
 }
 ;
 
-create procedure b3s_xsd_link (in t varchar)
+create procedure b3s_xsd_link (in dt varchar)
 {
-  return sprintf ('<a href="http://www.w3.org/2001/XMLSchema#%s">xsd:%s</a>', t, t);
+  return sprintf ('<a href="%s">%s</a>', dt, b3s_uri_curie(dt));
 }
 ;
 
 create procedure b3s_o_is_out (in x any)
 {
-  declare f, s, og any;
-  f := 'http://xmlns.com/foaf/0.1/';
-  s := 'http://schema.org/';
-  og := 'http://opengraphprotocol.org/schema/';
-  -- foaf:page, foaf:homePage, foaf:img, foaf:logo, foaf:depiction
-  if (__ro2sq (x) in (f||'page', f||'homePage', f||'img', f||'logo', f||'depiction', 'http://schema.org/url', 'http://schema.org/downloadUrl', 'http://schema.org/potentialAction', s||'logo', s||'image', s || 'mainEntityOfPage', og || 'image', 'http://www.openlinksw.com/ontology/webservices#usageExample'))
-    {
-      return 1;
-    }
-  return 0;
+  declare s, vr any;
+  s := iri_to_id (x);
+  vr := iri_to_id ('http://www.openlinksw.com/schemas/virtrdf#url');
+  return rdf_is_sub ('virtrdf-url', s,  vr, 3);
 }
 ;
 
@@ -931,7 +925,7 @@ again:
        _object := dat;
        goto again;
      }
-   else if (__tag (_object) = 243 or (isstring (_object) and (__box_flags (_object)= 1 or _object like 'nodeID://%' or _object like 'http://%')))
+   else if (__tag (_object) = 243 or (isstring (_object) and (__box_flags (_object)= 1 or _object like 'nodeID://%' or _object like 'http://%' or _object like 'https://%')))
      {
        declare _url, p_t any;
 
@@ -1018,22 +1012,22 @@ again:
    else if (__tag (_object) = 189)
      {
        http (sprintf ('<span %s>%d</span>', rdfa, _object));
-       lang := b3s_xsd_link ('integer');
+       lang := b3s_xsd_link (rdfs_type);
      }
    else if (__tag (_object) = 190)
      {
        http (sprintf ('<span %s>%f</span>', rdfa, _object));
-       lang := b3s_xsd_link ('float');
+       lang := b3s_xsd_link (rdfs_type);
      }
    else if (__tag (_object) = 191)
      {
        http (sprintf ('<span %s>%d</span>', rdfa, _object));
-       lang := b3s_xsd_link ('double');
+       lang := b3s_xsd_link (rdfs_type);
      }
    else if (__tag (_object) = 219)
      {
        http (sprintf ('<span %s>%s</span>', rdfa, cast (_object as varchar)));
-       lang := b3s_xsd_link ('double');
+       lang := b3s_xsd_link (rdfs_type);
      }
    else if (__tag (_object) = 182)
      {
@@ -1062,7 +1056,7 @@ again:
    else if (__tag (_object) = 211)
      {
        http (sprintf ('<span %s>%s</span>', rdfa, datestring (_object)));
-       lang := b3s_xsd_link ('dateTime');
+       lang := b3s_xsd_link (rdfs_type);
      }
    else if (__tag (_object) = 230)
      {

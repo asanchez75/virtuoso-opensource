@@ -15,7 +15,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2019 OpenLink Software
+--  Copyright (C) 1998-2021 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -68,6 +68,14 @@
   declare metas, rset any;
   declare auto_sponge_on_empty_graph int;
   declare q_txt any;
+
+  set http_charset='utf-8';
+  { 
+    --  catch error when using old binaries
+    declare continue handler for sqlstate '*';
+    --  always treat narrow string boxes as UTF-8 encoded
+    set http_in_charset='UTF-8';
+  }
 
   if (registry_get ('fct_auto_sponge') = '1')
     auto_sponge_on_empty_graph := 1;
@@ -304,7 +312,6 @@ again:
   --set_user_id (http_map_get ('vsp_uid'));
 
   odd_position := 0;
-  set http_charset='utf-8';
   set isolation = 'uncommitted';
 
   http_header ('Cache-Control: no-cache, must-revalidate\r\nPragma: no-cache\r\n');
@@ -412,7 +419,7 @@ again:
   declare desc_resource_uri varchar;
   declare desc_qr varchar;
   desc_qr := sprintf ('define sql:describe-mode "SPO" DESCRIBE <%s>', page_resource_uri);
-  desc_resource_uri := sprintf ('http://%{WSHost}s/sparql?query=%U&format=cxml', desc_qr);
+  desc_resource_uri := sprintf ('%s://%{WSHost}s/sparql?query=%U&format=cxml', protocol, desc_qr);
   --http_flush (1);
 
   declare plink_href varchar;
@@ -421,7 +428,7 @@ again:
 
   if (page is not null and page > 0)
     {
-      plink_href := concat (plink_href, sprintf ('&gp=%d&go=', page+1));
+      plink_href := concat (plink_href, sprintf ('&gp=%d&go=&lp=%d', page+1, _last));
     }
   if (connection_get ('inf') is not null)
     {

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2019 OpenLink Software
+ *  Copyright (C) 1998-2021 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -663,6 +663,8 @@ http_cli_ssl_cert (http_cli_ctx * ctx, caddr_t val)
     return (HC_RET_ERR_ABORT);
 
   ctx->hcctx_pkcs12_file = val;
+  if (NULL != val && 1 == strlen (val) && 1 == atoi (val))
+    ctx->hcctx_ssl_insecure = '\1';
   return (HC_RET_OK);
 }
 
@@ -822,7 +824,7 @@ http_cli_set_proxy (http_cli_ctx * ctx, caddr_t target)
 }
 
 HC_RET
-http_cli_set_ua_id (http_cli_ctx * ctx, caddr_t ua_id)
+http_cli_set_ua_id (http_cli_ctx * ctx, ccaddr_t ua_id)
 {
   if (ctx)
     {
@@ -1049,7 +1051,7 @@ http_cli_set_method (http_cli_ctx * ctx, int method)
   return (HC_RET_OK);
 }
 
-char*
+const char*
 http_cli_get_method_string (http_cli_ctx * ctx)
 {
   return (http_get_method_string (ctx->hcctx_method));
@@ -1503,9 +1505,9 @@ http_cli_calc_md5 (caddr_t str,
   int inx;
 
   memset (&ctx, 0, sizeof (MD5_CTX));
-  MD5Init (&ctx);
-  MD5Update (&ctx, str, len);
-  MD5Final (digest, &ctx);
+  MD5_Init (&ctx);
+  MD5_Update (&ctx, str, len);
+  MD5_Final (digest, &ctx);
 
   for (inx = 0; inx < sizeof (digest); inx++)
     {
@@ -2427,14 +2429,14 @@ All arguments except the URL can be db NULLs in bif call, NULL pointers in _impl
 */
 
 caddr_t
-bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, char * me,
+bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, const char * me,
     caddr_t url, caddr_t uid, caddr_t pwd, caddr_t method, caddr_t http_hdr, caddr_t body,
     caddr_t cert, caddr_t pk_pass, uint32 time_out, int time_out_is_null, caddr_t proxy, caddr_t ca_certs, int insecure,
     int ret_arg_index,
     int follow_redirects)
 {
   http_cli_ctx * ctx;
-  char* ua_id = http_client_id_string;
+  const char* ua_id = http_client_id_string;
   caddr_t ret = NULL;
   caddr_t _err_ret;
   int meth = HC_METHOD_GET;

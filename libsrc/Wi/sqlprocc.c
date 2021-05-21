@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2019 OpenLink Software
+ *  Copyright (C) 1998-2021 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -163,6 +163,9 @@ sqlc_decl_variable_list_1 (sql_comp_t * sc, ST ** params, int is_arg_list, dk_se
   /* procedure argument list or local variable list */
   query_t * qr = sc->sc_cc->cc_query;
   int inx;
+
+  if (BOX_ELEMENTS_0 (params) > MAX_STATE_SLOTS)
+    SQL_GPF_T1 (sc->sc_cc, "Query too large, variables in state over the limit");
 
   DO_BOX (ST *, decl, inx, params)
   {
