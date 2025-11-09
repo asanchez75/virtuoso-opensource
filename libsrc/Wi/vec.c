@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -318,13 +318,13 @@ dc_is_null (data_col_t * dc, int set)
 void
 dc_reserve_bytes (data_col_t * dc, int len)
 {
-  if (dc->dc_buf_fill + len >= dc->dc_buf_len)
+  if (dc->dc_buf_fill + len + DC_STR_MARGIN >= dc->dc_buf_len)
     {
       int l = 0;
-      if (len > 100000)
-	l = len;
-      else if (len > dc_str_buf_unit)
-	l = (len + 10) * 2;
+      if (len + DC_STR_MARGIN > 100000)
+	l = len + DC_STR_MARGIN;
+      else if (len + DC_STR_MARGIN > dc_str_buf_unit)
+	l = (len + DC_STR_MARGIN) * 2;
       else
 	l = dc_str_buf_unit;
       dc_get_buffer (dc, l);
@@ -339,13 +339,14 @@ dc_append_bytes (data_col_t * dc, db_buf_t bytes, int len, db_buf_t pref_bytes, 
 {
   len += pref_len;
   DC_CHECK_LEN (dc, dc->dc_n_values);
-  if (dc->dc_buf_fill + len >= dc->dc_buf_len)
+  /* make sure that a 16 byte read from 2 + the pointer fits in mapped memory for sse string ops  */
+  if (dc->dc_buf_fill + len + DC_STR_MARGIN >= dc->dc_buf_len)
     {
       int l = 0;
-      if (len > 100000)
-	l = len;
-      else if (len > dc_str_buf_unit)
-	l = (len + 10) * 2;
+      if (len + DC_STR_MARGIN > 100000)
+	l = len + DC_STR_MARGIN;
+      else if (len + DC_STR_MARGIN > dc_str_buf_unit)
+	l = (len + DC_STR_MARGIN) * 2;
       else
 	l = dc_str_buf_unit;
       dc_get_buffer (dc, l);
@@ -497,17 +498,29 @@ dc_append_null (data_col_t * dc)
 }
 
 
+/* 
+ * deserialize and eventually re-use the same box or even box itself,
+ * very dangerous since it is used often via ssl_box_index could make a big confusion
+ * esp. if single ssl has cast to two distinct cast ssls think about that
+ */
 caddr_t
 box_deserialize_reusing (db_buf_t string, caddr_t box)
 {
   boxint n;
   iri_id_t iid;
   int len, head_len;
-  dtp_t old_dtp;
+  dtp_t old_dtp, dtp, flags = 0;
   if (!IS_BOX_POINTER (box))
     return box_deserialize_string ((caddr_t) string, INT32_MAX, 0);
   old_dtp = box_tag (box);
-  switch (string[0])
+  dtp = *string;
+  if (DV_BOX_FLAGS == dtp)
+    {
+      flags = LONG_REF_NA(string + 1);
+      string += 5;
+      dtp = *string;
+    }
+  switch (dtp)
     {
     case DV_SINGLE_FLOAT:
       if (DV_SINGLE_FLOAT == old_dtp)
@@ -585,6 +598,21 @@ box_deserialize_reusing (db_buf_t string, caddr_t box)
 	{
 	  box_reuse (box, (caddr_t) string + head_len, len + 1, DV_STRING);
 	  box[len] = 0;
+          box_flags (box) = flags;
+	  return box;
+	}
+      goto no_reuse;
+    case DV_BIN:
+      len = (unsigned char) string[1];
+      head_len = 2;
+      goto bin_data;
+    case DV_LONG_BIN:
+      len = LONG_REF_NA (string + 1);
+      head_len = 5;
+    bin_data:
+      if (DV_BIN == old_dtp && ALIGN_STR ((len)) == ALIGN_STR (box_length (box)))
+	{
+	  box_reuse (box, (caddr_t)string + head_len, len, DV_BIN);
 	  return box;
 	}
       goto no_reuse;
@@ -601,6 +629,8 @@ box_deserialize_reusing (db_buf_t string, caddr_t box)
 	/* read first so that there's no ref to freed if throw from read */
 	caddr_t x = box_deserialize_string ((caddr_t) string, INT32_MAX, 0);
 	dk_free_tree (box);
+        if (flags && NULL != x)
+          box_flags (x) = flags;
 	return x;
       }
     }
@@ -937,6 +967,8 @@ DBG_NAME (dc_get_buffer) (DBG_PARAMS data_col_t * dc, int bytes)
   END_DO_SET ();
   if (!new_buf)
     {
+      int nth;
+      bytes = mm_next_size (bytes + 48, &nth) - 8;
       new_buf = (db_buf_t) DBG_NAME (mp_alloc_box_ni) (DBG_ARGS dc->dc_mp, MAX (bytes, 0xfff8), DV_CUSTOM);
       mp_set_push (dc->dc_mp, &dc->dc_buffers, (void *) new_buf);
     }
@@ -1003,10 +1035,10 @@ dc_itc_append_any (it_cursor_t * itc, buffer_desc_t * buf, dbe_col_loc_t * cl, c
   VLI;
   if (DV_ANY != dc->dc_dtp)
     dc_heterogenous (dc);
-  if (dc->dc_buf_fill + vl1 + vl2 > dc->dc_buf_len)
+  if (dc->dc_buf_fill + vl1 + vl2 + DC_STR_MARGIN > dc->dc_buf_len)
     {
       int bytes;
-      bytes = MAX (dc->dc_buf_len, vl1 + vl2);
+      bytes = MAX (dc->dc_buf_len, vl1 + vl2 + DC_STR_MARGIN);
       dc_get_buffer (dc, bytes);
     }
   memcpy_16 (dc->dc_buffer + dc->dc_buf_fill, xx, vl1);
@@ -1367,8 +1399,8 @@ sslr_qst_get (caddr_t * inst, state_slot_ref_t * sslr, int row_no)
     default:
       if (!(DCT_BOXES & val_dc->dc_type))
 	GPF_T1 ("dc of unsupported dtp for single value qst_get");
-	if (val_dc->dc_n_values <= (uint32) row_no)
-	  return NULL;
+      if (val_dc->dc_n_values <= (uint32) row_no)
+	return NULL;
       return ((caddr_t *) val_dc->dc_values)[row_no];
     }
   return 0;
@@ -1513,28 +1545,50 @@ sslr_n_consec_ref (caddr_t * inst, state_slot_ref_t * sslr, int *sets, int set, 
     }
 }
 
-#define RES_IF_NN(set)		\
-{ \
-  if (!dc->dc_any_null) { \
-    sets[fill++] = set; \
-  } else  \
-    { \
-      if (dc->dc_nulls) \
-	{ \
-	  if (!DC_IS_NULL (dc, set)) \
-	    sets[fill++] = set; \
-	} \
-      else  \
-      { \
-	if (DV_DB_NULL != ((db_buf_t*)dc->dc_values)[set][0]) \
-	  sets[fill++] = set; \
-      } \
-    } \
-}
+#define RES_IF_NN(set)                                                  \
+  do {                                                                  \
+    if (!dc->dc_any_null) {                                             \
+        sets[fill++] = set;                                             \
+    } else {                                                            \
+        if (dc->dc_nulls) {                                             \
+          if (!DC_IS_NULL (dc, set))                                    \
+            sets[fill++] = set;                                         \
+        } else {                                                        \
+          if (DV_DB_NULL != ((db_buf_t *) dc->dc_values)[set][0])       \
+            sets[fill++] = set;                                         \
+        }                                                               \
+      }                                                                 \
+  } while (0)
 
+
+#define RES_IF_NN_G(nth_v)                                              \
+  do {                                                                  \
+    if (!dc->dc_any_null) {                                             \
+      group_sets[fill] = n + nth_v - 1;                                 \
+      sets[fill++] = s##nth_v;                                          \
+    } else {                                                            \
+      if (dc->dc_nulls) {                                               \
+        if (!DC_IS_NULL (dc, s##nth_v)) {                               \
+          group_sets[fill] = n + nth_v - 1;                             \
+          sets[fill++] = s##nth_v;                                      \
+        }                                                               \
+      } else if ((DCT_BOXES & dc->dc_type)) {                           \
+        caddr_t val = ((caddr_t*)dc->dc_values)[s##nth_v];              \
+        if (!(IS_BOX_POINTER (val) && DV_DB_NULL == box_tag (val))) {   \
+          group_sets[fill] = n + nth_v - 1;                             \
+          sets[fill++] = s##nth_v;                                      \
+        }                                                               \
+      } else {                                                          \
+        if (DV_DB_NULL != ((db_buf_t*)dc->dc_values)[s##nth_v][0]) {    \
+          group_sets[fill] = n + nth_v - 1;                             \
+          sets[fill++] = s##nth_v;                                      \
+        }                                                               \
+      }                                                                 \
+    }                                                                   \
+  } while (0)
 
 int
-sslr_nn_ref (caddr_t * inst, state_slot_ref_t * sslr, int *sets, int set, int n_sets)
+sslr_nn_ref (caddr_t * inst, state_slot_ref_t * sslr, int *sets, int *group_sets, int set, int n_sets)
 {
   int n, step, fill = 0;
   data_col_t *dc = QST_BOX (data_col_t *, inst, sslr->ssl_index);
@@ -1554,14 +1608,14 @@ sslr_nn_ref (caddr_t * inst, state_slot_ref_t * sslr, int *sets, int set, int n_
 	  s7 = set_nos[s7];
 	  s8 = set_nos[s8];
 	}
-      RES_IF_NN (s1);
-      RES_IF_NN (s2);
-      RES_IF_NN (s3);
-      RES_IF_NN (s4);
-      RES_IF_NN (s5);
-      RES_IF_NN (s6);
-      RES_IF_NN (s7);
-      RES_IF_NN (s8);
+      RES_IF_NN_G (1);
+      RES_IF_NN_G (2);
+      RES_IF_NN_G (3);
+      RES_IF_NN_G (4);
+      RES_IF_NN_G (5);
+      RES_IF_NN_G (6);
+      RES_IF_NN_G (7);
+      RES_IF_NN_G (8);
 
     }
   for (n = n; n < n_sets; n++)
@@ -1572,7 +1626,7 @@ sslr_nn_ref (caddr_t * inst, state_slot_ref_t * sslr, int *sets, int set, int n_
 	  int *set_nos = (int *) inst[sslr->sslr_set_nos[step]];
 	  s1 = set_nos[s1];
 	}
-      RES_IF_NN (s1);
+      RES_IF_NN_G (1);
     }
   return fill;
 }
@@ -1821,9 +1875,9 @@ qst_vec_set_copy (caddr_t * inst, state_slot_t * ssl, caddr_t v)
   QNCAST (query_instance_t, qi, inst);
   int set = qi->qi_set;
   data_col_t *dc = QST_BOX (data_col_t *, inst, ssl->ssl_index);
-  dtp_t dtp = DV_TYPE_OF (v);
+  dtp_t val_dtp = DV_TYPE_OF (v);
   DC_CHECK_LEN (dc, set);
-  if (DV_DB_NULL == dtp)
+  if (DV_DB_NULL == val_dtp)
     {
       dc_set_null (dc, set);
       return;
@@ -1832,7 +1886,7 @@ qst_vec_set_copy (caddr_t * inst, state_slot_t * ssl, caddr_t v)
     {
       DC_FILL_TO (dc, int64, set);
     }
-  if (DV_ANY == ssl->ssl_sqt.sqt_dtp && DV_ANY != dc->dc_dtp && !(DCT_BOXES & dc->dc_type) && dtp_canonical[dtp] != dc->dc_dtp)
+  if (DV_ANY == ssl->ssl_sqt.sqt_dtp && DV_ANY != dc->dc_dtp && !(DCT_BOXES & dc->dc_type) && dtp_canonical[val_dtp] != dc->dc_dtp)
     dc_heterogenous (dc);
   /* value from uninitalized variable */
   if (0 && NULL == v && !(DCT_BOXES & dc->dc_type) && DV_DATETIME == dtp_canonical[dc->dc_dtp])
@@ -1886,7 +1940,7 @@ qst_vec_set_copy (caddr_t * inst, state_slot_t * ssl, caddr_t v)
 		dc_set_null (dc, set);
 		return;
 	      }
-	    memcpy_dt (dc->dc_values + DT_LENGTH * set, (v ? v : zero));
+	    memcpy_dt (dc->dc_values + DT_LENGTH * set, (IS_DATE_DTP(val_dtp) ? v : zero));
 	  if (dc->dc_nulls)
 	    DC_CLR_NULL (dc, set);
 	  if (set >= dc->dc_n_values)
@@ -1967,7 +2021,14 @@ qst_vec_set (caddr_t * inst, state_slot_t * ssl, caddr_t v)
 	case DV_DATE:
 	case DV_TIME:
 	case DV_TIMESTAMP:
-	  memcpy_dt (dc->dc_values + DT_LENGTH * set, v);
+            if (IS_DATE_DTP(DV_TYPE_OF(v)))
+              {
+                memcpy_dt (dc->dc_values + DT_LENGTH * set, v);
+              }
+            else
+              {
+                memzero (dc->dc_values + DT_LENGTH * set, DT_LENGTH);
+              }
 	  if (dc->dc_nulls)
 	    DC_CLR_NULL (dc, set);
 	  if (set >= dc->dc_n_values)
@@ -1994,6 +2055,8 @@ dc_set_long (data_col_t * dc, int set, boxint lv)
 {
   int save = dc->dc_n_values;
   DC_CHECK_LEN (dc, set);
+  if (dc->dc_nulls)
+    DC_CLR_NULL (dc, set);
   if (!(DCT_NUM_INLINE & dc->dc_type))
     {
       int is_boxes = DCT_BOXES & dc->dc_type;
@@ -2182,7 +2245,7 @@ cl_dcf_id (col_ref_t f)
 
 
 void
-cl_dc_funcs ()
+cl_dc_funcs (void)
 {
   cl_dc_func_id = hash_table_allocate (21);
   cl_id_dc_func = hash_table_allocate (21);
@@ -2931,7 +2994,7 @@ vec_ssl_assign (caddr_t * inst, state_slot_t * ssl_to, state_slot_t * ssl_from)
 
   if (!set_mask && SSL_VEC == ssl_from->ssl_type)
     {
-      if (DV_ANY != dc_from->dc_dtp && !dc_to->dc_n_values)
+      if (DV_ANY != dc_from->dc_dtp && !dc_to->dc_n_values && !vec_box_dtps[dc_from->dc_dtp])
 	dc_convert_empty (dc_to, dv_ce_dtp[dc_from->dc_dtp]);
       if (dc_to->dc_dtp == dc_from->dc_dtp && dc_to->dc_type == dc_from->dc_type)
 	{
@@ -2951,7 +3014,7 @@ vec_ssl_assign (caddr_t * inst, state_slot_t * ssl_to, state_slot_t * ssl_from)
     }
   if (SSL_REF == ssl_from->ssl_type)
     {
-      if (!set_mask && !dc_to->dc_n_values && DV_ANY != dc_from->dc_dtp)
+      if (!set_mask && !dc_to->dc_n_values && DV_ANY != dc_from->dc_dtp && !vec_box_dtps[dc_from->dc_dtp])
 	{
 	  dc_convert_empty (dc_to, dv_ce_dtp[dc_from->dc_dtp]);
 	}
@@ -3012,6 +3075,10 @@ vec_ssl_assign (caddr_t * inst, state_slot_t * ssl_to, state_slot_t * ssl_from)
 		      DC_SET_NULL (dc_to, org_sets[set1]);
 		      dc_to->dc_any_null = 1;
 		    }
+                  else
+                    {
+                      DC_CLR_NULL (dc_to, org_sets[set1]);
+                    }
 		}
 	    }
 	  if (last_assigned >= dc_to->dc_n_values)
@@ -3211,8 +3278,10 @@ dcp_nz (data_col_t * dc)
 	  s += v;
 	}
     }
+#if 0
   if (s != n)
     bing ();
+#endif
   printf ("first %d last %d n %d sum %d\n", first, last, n, (int) s);
 }
 

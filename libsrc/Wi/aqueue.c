@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -86,7 +86,7 @@ aqt_other_aq (aq_thread_t * aqt)
   /* called when own aq is exhausted. See if another can be served */
   async_queue_t *best = NULL;
   uint32 best_time;
-  uint32 now = 4000 + approx_msec_real_time ();
+  time_msec_t now = 4000 + approx_msec_real_time ();
   ASSERT_IN_MTX (all_aq_mtx);
   DO_HT (async_queue_t *, aq, caddr_t, ign, all_aqs)
   {
@@ -99,7 +99,7 @@ aqt_other_aq (aq_thread_t * aqt)
 	&& aq->aq_n_threads < aq->aq_max_threads && (!best || best_time < now - aq->aq_ts))
       {
 	best = aq;
-	best_time = now - aq->aq_ts;
+	  best_time = (uint32) (now - aq->aq_ts);
       }
   }
   END_DO_HT;
@@ -160,7 +160,7 @@ aq_thread_func (aq_thread_t * aqt)
       CLI_SET_QUAL (aqt->aqt_cli, aq->aq_qualifier);
       memzero (&aqt->aqt_cli->cli_activity, sizeof (db_activity_t));
       aqr->aqr_dbg_thread = THREAD_CURRENT_THREAD;
-      if (0 && aq->aq_anytime_started && aq->aq_anytime_started + aq->aq_anytime_timeout < approx_msec_real_time ())
+      if (0 && aq->aq_anytime_started && (aq->aq_anytime_started + aq->aq_anytime_timeout) < approx_msec_real_time ())
 	aqr->aqr_error = srv_make_new_error (SQL_ANYTIME, "AQANY", "Aq request anytimed before starting execution");
       else
 	aqr->aqr_value = aqr->aqr_func (aqr->aqr_args, &aqr->aqr_error);
@@ -220,7 +220,7 @@ aq_thread_func (aq_thread_t * aqt)
 
 
 aq_thread_t *
-aqt_allocate ()
+aqt_allocate (void)
 {
   if (aq_n_threads >= aq_max_threads)
     return NULL;
@@ -262,15 +262,17 @@ aqr_call_w_ctx (aq_request_t * aqr)
   int old_nt = cli->cli_non_txn_insert;
   int old_ntrig = cli->cli_no_triggers;
   int old_ac = cli->cli_row_autocommit;
+  user_t * old_usr = cli->cli_user;
   cl_aq_ctx_t *old_claq = cli->cli_claq;
   cl_slice_t *old_csl = cli->cli_csl;
-  int old_qfs = cli->cli_anytime_qf_started;
+  time_msec_t old_qfs = cli->cli_anytime_qf_started;
   cli->cli_aqr = aqr;
   cli->cli_no_triggers = aq->aq_no_triggers;
   cli->cli_row_autocommit = aq->aq_row_autocommit;
   cli->cli_non_txn_insert = aq->aq_non_txn_insert;
+  cli->cli_user = aq->aq_user;
   aqr->aqr_dbg_thread = THREAD_CURRENT_THREAD;
-  if (0 && aq->aq_anytime_started && aq->aq_anytime_started + aq->aq_anytime_timeout < approx_msec_real_time ())
+  if (0 && aq->aq_anytime_started && (aq->aq_anytime_started + aq->aq_anytime_timeout) < approx_msec_real_time ())
     aqr->aqr_error = srv_make_new_error (SQL_ANYTIME, "AQANY", "Aq request anytimed before starting execution");
   else
     aqr->aqr_value = aqr->aqr_func (aqr->aqr_args, &aqr->aqr_error);
@@ -280,6 +282,7 @@ aqr_call_w_ctx (aq_request_t * aqr)
   cli->cli_claq = old_claq;
   cli->cli_aqr = old_aqr;
   cli->cli_anytime_qf_started = old_qfs;
+  cli->cli_user = old_usr;
   if (old_csl)
     {
       caddr_t err = NULL;
@@ -951,7 +954,7 @@ aq_sql_func (caddr_t * av, caddr_t * err_ret)
     {
       user_t * usr = cli->cli_user;
       *err_ret = srv_make_new_error ("42000", "SR186:SECURITY", "No permission to execute %s in aq_request() with user ID %d, group ID %d",
-        full_name, (int)(usr ? usr->usr_id : 0), (int)(usr ? usr->usr_g_id : 0) );
+        full_name, (int)(usr ? usr->usr_id : -1), (int)(usr ? usr->usr_g_id : -1) );
       dk_free_tree ((caddr_t) params);
       return NULL;
     }
@@ -1157,7 +1160,7 @@ size_t dk_alloc_cache_total (void * cache);
 void thr_alloc_cache_clear (thread_t * thr);
 
 size_t 
-aq_thr_mem_cache_total ()
+aq_thr_mem_cache_total (void)
 {
   int i;
   size_t n = 0;
@@ -1175,7 +1178,7 @@ aq_thr_mem_cache_total ()
 }
 
 void 
-aq_thr_mem_cache_clear ()
+aq_thr_mem_cache_clear (void)
 {
   int i;
   resource_t * rc = aq_threads;
@@ -1191,7 +1194,7 @@ aq_thr_mem_cache_clear ()
 }
 
 void
-bif_aq_init ()
+bif_aq_init (void)
 {
   dk_mem_hooks (DV_ASYNC_QUEUE, (box_copy_f) aq_copy, (box_destr_f) aq_free, 1);
   PrpcSetWriter (DV_ASYNC_QUEUE, (ses_write_func) aq_serialize);

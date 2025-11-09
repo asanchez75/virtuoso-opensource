@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -690,7 +690,7 @@ sec_run_grant_revoke (query_instance_t * qi, ST * tree)
 typedef struct failed_login_s
 {
   char fl_from [16];
-  long fl_last;
+  time_msec_t fl_last;
   int fl_count;
 } failed_login_t;
 
@@ -703,7 +703,7 @@ static dk_mutex_t *failed_login_mtx;
 
 
 static void
-failed_login_init ()
+failed_login_init (void)
 {
   failed_login_mtx = mutex_allocate ();
   failed_login_hash = id_str_hash_create (101);
@@ -717,7 +717,7 @@ failed_login_from (dk_session_t *ses)
   if (ses && ses->dks_session)
     {
       failed_login_t *login = NULL, **plogin = &login;
-      long now = approx_msec_real_time ();
+      time_msec_t now = approx_msec_real_time ();
 
       tcpses_print_client_ip (ses->dks_session, from, sizeof (from));
 
@@ -752,7 +752,7 @@ failed_login_to_disconnect (dk_session_t *ses)
   if (ses && ses->dks_session)
     {
       failed_login_t *login = NULL, **plogin = &login;
-      long now = approx_msec_real_time ();
+      time_msec_t now = approx_msec_real_time ();
 
       tcpses_print_client_ip (ses->dks_session, from, sizeof (from));
 
@@ -817,8 +817,8 @@ failed_login_purge (void)
    id_hash_iterator_t hit;
    char **key;
    failed_login_t *login = NULL, **plogin;
-   long now = approx_msec_real_time ();
-   static long last_start_time = 0;
+   time_msec_t now = approx_msec_real_time ();
+   static time_msec_t last_start_time = 0;
 
    if (now - last_start_time > LOGIN_FAILED_INACTIVITY_PERIOD_MSEC)
      {
@@ -1553,7 +1553,7 @@ sec_grant_single_role (user_t * user, user_t * gr, int make_err)
                 continue;
 	      if (grp == gr->usr_id)
 		  found = 1;
-		  break;
+	      break;
 		}
 	  END_DO_BOX;
 	  if (!found)
@@ -1970,6 +1970,8 @@ sec_user_read_groups (char *name)
     user->usr_g_ids = NULL;
 }
 
+int64 users_cache_sz = 101;
+
 void
 sec_read_users (void)
 {
@@ -1985,7 +1987,7 @@ sec_read_users (void)
 
   if (!sec_users)
     {
-      sec_users = id_str_hash_create (101);
+      sec_users = id_str_hash_create (users_cache_sz);
       sec_user_by_id = hash_table_allocate (101);
 
       read_users_qr = sql_compile_static (
@@ -2399,7 +2401,7 @@ sec_stmt_exec (query_instance_t * qi, ST * tree)
 	{
 	  case CREATE_USER_STMT:
 	      qi->qi_trx->lt_replicate = REPL_NO_LOG;
-	      sec_set_user (qi, tree->_.op.arg_1, tree->_.op.arg_1, 0);
+	      sec_set_user (qi, tree->_.op.arg_1, tree->_.op.arg_2, 0);
 	      snprintf (szBuffer, sizeof (szBuffer), "CREATE USER %s", tree->_.op.arg_1);
 	      break;
 	  case SET_GROUP_STMT:

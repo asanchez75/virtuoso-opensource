@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -111,17 +111,17 @@ ceic_del_dbg_log_row (ce_ins_ctx_t * ceic, buffer_desc_t * buf)
     }
   if (!n_del)
     return;
-  itc->itc_matches = mp_alloc_box (ceic->ceic_mp, n_del * sizeof (row_no_t), DV_BIN);
-  log_rds = (row_delta_t **)mp_alloc_box (ceic->ceic_mp, sizeof (caddr_t) * n_del, DV_BIN);
+  itc->itc_matches = (row_no_t *) mp_alloc_box (ceic->ceic_mp, n_del * sizeof (row_no_t), DV_BIN);
+  log_rds = (row_delta_t **) mp_alloc_box (ceic->ceic_mp, sizeof (caddr_t) * n_del, DV_BIN);
   for (inx = 0; inx < itc->itc_range_fill; inx++)
     {
       if (COL_NO_ROW == itc->itc_ranges[inx].r_end)
 	{
-	  row_delta_t * rd = log_rds[fill] = mp_alloc (ceic->ceic_mp, sizeof (row_delta_t));
+	  row_delta_t * rd = log_rds[fill] = (row_delta_t *) mp_alloc (ceic->ceic_mp, sizeof (row_delta_t));
 	  memzero (rd, sizeof (row_delta_t));
 	  rd->rd_key = key;
 	  rd->rd_op = RD_DELETE;
-	  rd->rd_values = mp_alloc_box (ceic->ceic_mp,  sizeof (caddr_t) * key->key_n_significant, DV_ARRAY_OF_POINTER);
+	  rd->rd_values = (caddr_t *) mp_alloc_box (ceic->ceic_mp,  sizeof (caddr_t) * key->key_n_significant, DV_ARRAY_OF_POINTER);
 	  itc->itc_matches[fill++] = itc->itc_ranges[inx].r_first;
 	}
     }
@@ -131,7 +131,7 @@ ceic_del_dbg_log_row (ce_ins_ctx_t * ceic, buffer_desc_t * buf)
   memzero (&dc, sizeof (dc));
   dc.dc_mp = ceic->ceic_mp;
   dc.dc_type = DCT_BOXES | DCT_FROM_POOL;
-  dc.dc_values = mp_alloc (ceic->ceic_mp, sizeof (caddr_t) * n_del);
+  dc.dc_values = (db_buf_t) mp_alloc (ceic->ceic_mp, sizeof (caddr_t) * n_del);
   dc.dc_sqt.sqt_dtp = DV_ARRAY_OF_POINTER;
   dc.dc_n_places = n_del;
   DO_SET (dbe_column_t *, col, &key->key_parts)
@@ -1038,8 +1038,10 @@ ceic_save_uci (ce_ins_ctx_t * ceic, buffer_desc_t * buf, int ice, row_no_t * uci
   for (inx = 0; inx < dc.dc_n_values; inx++)
     {
       caddr_t val = ((caddr_t *) dc.dc_values)[inx];
+#if 0
       if (DV_ANY == dc.dc_dtp && DV_STRING == (dtp_t) val[0] && LONG_REF_NA (val + 1) > 4000)
 	bing ();
+#endif
       ceic->ceic_rb_rds[inx + ceic->ceic_nth_rb_rd]->rd_values[ceic->ceic_nth_col] = val;
     }
   ceic->ceic_nth_rb_rd += dc.dc_n_values;
@@ -1568,7 +1570,7 @@ itc_ensure_col_refs (it_cursor_t * itc)
 int enable_rq_check_all = 0;
 
 void
-rq_check_all ()
+rq_check_all (void)
 {
   dbe_table_t *tb = sch_name_to_table (wi_inst.wi_schema, "DB.DBA.RDF_QUAD");
   DO_SET (dbe_key_t *, key, &tb->tb_keys)
@@ -2054,7 +2056,7 @@ dc_for_col (mem_pool_t * mp, row_delta_t ** rds, dbe_key_t * key, int nth_part, 
 
 
 void
-cpt_col_restore_uncommitted ()
+cpt_col_restore_uncommitted (void)
 {
   dtp_t right_temp[2000];
   it_cursor_t *itc = mcp_itc;

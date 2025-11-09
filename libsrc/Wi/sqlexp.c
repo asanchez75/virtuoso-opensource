@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -667,6 +667,8 @@ sqlc_coalesce_exp (sql_comp_t * sc, ST * tree, dk_set_t * code)
   df_elt_t *dfe = sc->sc_so ? sqlo_df (sc->sc_so, tree) : NULL;
 
   res->ssl_is_callret = 1;
+  if (sc->sc_grouping)
+    ssl_set_dc_type (res);
   for (inx = 0; inx < n_exps; inx++)
     {
       jmp_label_t ok = sqlc_new_label (sc);
@@ -741,8 +743,10 @@ scalar_exp_generate (sql_comp_t * sc, ST * tree, dk_set_t * code)
   if (sc->sc_so)
     {
       dfe = sqlo_df (sc->sc_so, tree);
+#if 0
       if (st_is_call (tree, "__ro2lo", 1))
-  bing ();
+        bing ();
+#endif
 
       if (dfe->dfe_ssl)
 	return (dfe->dfe_ssl);
@@ -1001,7 +1005,7 @@ cv_artm_set_type (instruction_t * ins)
 	  switch (ins->ins_type)
             {
             case IN_ARTM_PLUS:
-              if ((DV_DATETIME == ins->_.artm.left->ssl_dtp) || (DV_DATETIME == ins->_.artm.right->ssl_dtp))
+              if (IS_DATE_DTP(ins->_.artm.left->ssl_dtp) || IS_DATE_DTP (ins->_.artm.right->ssl_dtp))
                 {
                   ins->_.artm.result->ssl_dtp = DV_DATETIME;
                   ins->_.artm.result->ssl_sqt.sqt_non_null = 0;
@@ -1009,10 +1013,10 @@ cv_artm_set_type (instruction_t * ins)
                 }
               break;
             case IN_ARTM_MINUS:
-              if (DV_DATETIME == ins->_.artm.left->ssl_dtp)
+              if (IS_DATE_DTP (ins->_.artm.left->ssl_dtp))
                 {
                   ins->_.artm.result->ssl_sqt.sqt_non_null = 0;
-                  if (DV_DATETIME == ins->_.artm.right->ssl_dtp)
+                  if (IS_DATE_DTP (ins->_.artm.right->ssl_dtp))
                     {
                       ins->_.artm.result->ssl_dtp = DV_NUMERIC;
                       goto result_dtp_is_set;
@@ -1034,6 +1038,9 @@ cv_artm_set_type (instruction_t * ins)
 result_dtp_is_set:
 	  if (DV_NUMERIC == ins->_.artm.result->ssl_dtp)
 	    {
+              if (ins->_.artm.left->ssl_is_callret || ins->_.artm.left->ssl_vary ||
+                  ins->_.artm.right->ssl_is_callret || ins->_.artm.right->ssl_vary)
+                ins->_.artm.result->ssl_vary = 1; /* numeric ssl dc is boxes, can have box of int, thus cast on ins is needed */
 	      ins->_.artm.result->ssl_sqt.sqt_precision = NUMERIC_MAX_PRECISION;
 	      ins->_.artm.result->ssl_sqt.sqt_scale = NUMERIC_MAX_SCALE;
 	    }
@@ -1351,14 +1358,17 @@ cv_subq_ret (sql_comp_t * sc, instruction_t * ins)
 {
   query_t * qr = ins->_.subq.query;
   select_node_t * sel = qr->qr_select_node;
-  if (!sel)
+  if (!sel || !qr->qr_select_node->sel_out_slots[0])
     return NULL;
   qr->qr_select_node->sel_vec_role = SEL_VEC_SCALAR;
   qr->qr_select_node->sel_out_slots[0]->ssl_sqt.sqt_non_null = 0;
   if (qr->qr_proc_vectored)
     {
-      ins->_.subq.scalar_ret = sqlc_new_temp (sc, "scalar", sel->sel_out_slots[0]->ssl_sqt.sqt_dtp);
-      ins->_.subq.scalar_ret->ssl_sqt = sel->sel_out_slots[0]->ssl_sqt;
+      state_slot_t * out = sel->sel_out_slots[0];
+      ins->_.subq.scalar_ret = sqlc_new_temp (sc, "scalar", out->ssl_sqt.sqt_dtp);
+      ins->_.subq.scalar_ret->ssl_sqt = out->ssl_sqt;
+      ins->_.subq.scalar_ret->ssl_vary = SSL_REF != out->ssl_type ?
+          out->ssl_is_callret : ((state_slot_ref_t *)out)->sslr_ssl->ssl_is_callret;
 
       if (sqlg_is_vector)
 	sel->sel_scalar_ret = ins->_.subq.scalar_ret;
@@ -2109,16 +2119,16 @@ cv_refd_slots (sql_comp_t * sc, code_vec_t cv, dk_hash_t * res, dk_hash_t * all_
 	  break;
 	case INS_SUBQ:
 	  {
-	    state_slot_t ** out_save = sc->sc_sel_out;
-	  if (non_cl_local)
-	    *non_cl_local = 1;
+	    state_slot_t **out_save = sc->sc_sel_out;
+	    if (non_cl_local)
+	      *non_cl_local = 1;
 	    sc->sc_sel_out = NULL;
-	  if (res)
-	  sqlg_qn_env (sc, ins->_.subq.query->qr_head_node, NULL, res);
+	    if (res)
+	      sqlg_qn_env (sc, ins->_.subq.query->qr_head_node, NULL, res);
 	    sc->sc_sel_out = out_save;
 	    if (ins->_.subq.query->qr_select_node)
 	      {
-	  ASG_SSL (res, all_res, ins->_.subq.query->qr_select_node->sel_out_slots[0]);
+		ASG_SSL (res, all_res, ins->_.subq.query->qr_select_node->sel_out_slots[0]);
 		ASG_SSL (res, all_res, ins->_.subq.query->qr_select_node->sel_scalar_ret);
 	      }
 	    break;
@@ -2656,7 +2666,7 @@ sqlg_agg_ins (sql_comp_t * sc, ST * tree, dk_set_t * code,
     case AMMSC_MAX:
       {
 	state_slot_t *best = ssl_new_inst_variable (sc->sc_cc, AMMSC_MAX == tree->_.fn_ref.fn_code ? "best" : "min", DV_UNKNOWN);
-	cv_agg (fun_ref_code, tree->_.fn_ref.fn_code, best, arg, set_no, tree->_.fn_ref.all_distinct, sc);
+	cv_agg (fun_ref_code, tree->_.fn_ref.fn_code, best, arg, set_no, (void*)(ptrlong)tree->_.fn_ref.all_distinct, sc);
 	dk_set_push (&sc->sc_fun_ref_temps, (void *) best);
 	best->ssl_qr_global = 1;
 	sc->sc_fun_ref_defaults = NCONC (sc->sc_fun_ref_defaults, CONS (dk_alloc_box (0, DV_DB_NULL), NULL));
@@ -2685,12 +2695,12 @@ sqlg_agg_ins (sql_comp_t * sc, ST * tree, dk_set_t * code,
 	sc->sc_fun_ref_default_ssls = NCONC (sc->sc_fun_ref_default_ssls, CONS (sum, NULL));
 	if (!is_constant_arg)
 	  {
-	    cv_agg (fun_ref_code, AMMSC_SUM, sum, arg, set_no, tree->_.fn_ref.all_distinct, sc);
+	    cv_agg (fun_ref_code, AMMSC_SUM, sum, arg, set_no, (void*)(ptrlong)tree->_.fn_ref.all_distinct, sc);
 	  }
 	else
 	  {
 	    if (arg->ssl_dtp != DV_DB_NULL)
-	      cv_agg (fun_ref_code, AMMSC_SUM, sum, arg, set_no, tree->_.fn_ref.all_distinct, sc);
+	      cv_agg (fun_ref_code, AMMSC_SUM, sum, arg, set_no, (void*)(ptrlong)tree->_.fn_ref.all_distinct, sc);
 	  }
 	result = sum;
 	break;
@@ -2879,7 +2889,7 @@ select_ref_generate (sql_comp_t * sc, ST * tree, dk_set_t * code,
 	    jmp_label_t setenv_end = sqlc_new_label (sc);
 
 	    state_slot_t *flag = ssl_new_inst_variable (sc->sc_cc, "user_aggr_notfirst", DV_SHORT_INT);
-	    state_slot_t *env = ssl_new_inst_variable (sc->sc_cc, "user_aggr_env", DV_UNKNOWN);
+	    state_slot_t *env = ssl_new_inst_variable (sc->sc_cc, "user_aggr_env", DV_ARRAY_OF_POINTER);
 	    state_slot_t *ret = ssl_new_inst_variable (sc->sc_cc, "user_aggr_ret", DV_UNKNOWN);
 	    caddr_t deflt_env;
 	    state_slot_t ** acc_args = (state_slot_t **) dk_alloc_box (sizeof (state_slot_t *) * (1 + BOX_ELEMENTS(tree->_.fn_ref.fn_arglist)), DV_ARRAY_OF_POINTER);

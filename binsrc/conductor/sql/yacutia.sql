@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -21,6 +21,8 @@
 --
 
 /* Aggregate concat */
+
+use DB;
 
 create procedure yac_rep_exec (in _attached_qual varchar, in _attached_owner varchar, in _attached_name varchar,
 			       inout _stmt any, inout _stat any, inout _msg any)
@@ -213,6 +215,7 @@ create procedure adm_menu_tree ()
       <node name="PKI Wizard" url="sec_pki_3.vspx" id="26" place="1" allowed="yacutia_acl_page"/>
       <node name="PKI Wizard" url="sec_pki_4.vspx" id="26" place="1" allowed="yacutia_acl_page"/>
       <node name="PKI Wizard" url="sec_pki_drop.vspx" id="26" place="1" allowed="yacutia_acl_page"/>
+      <node name="PKI Wizard" url="sec_pki_renew.vspx" id="26" place="1" allowed="yacutia_acl_page"/>
       <node name="PKI Wizard" url="sec_pki_2_conf.vspx" id="26" place="1" allowed="yacutia_acl_page"/>
      </node>
      <node name="Access Control" url="sec_auth_serv.vspx" id="24" place="1" allowed="yacutia_acl_page">
@@ -220,11 +223,13 @@ create procedure adm_menu_tree ()
       <node name="ACL Edit" url="sec_acl_edit.vspx" id="26" place="1" allowed="yacutia_acl_page"/>
      </node>
      <node name="CA Roots" url="sec_ca.vspx" id="271" place="1" allowed="yacutia_acl_page"/>
+     <node name="Automatic Certificate Management" url="sec_acme.vspx" id="272" place="1" allowed="yacutia_acl_page"/>
    </node>
    <node name="User Accounts" url="accounts_page.vspx" id="3" allowed="yacutia_accounts_page">
      <node name="Accounts" url="accounts.vspx" id="4" place="1" allowed="yacutia_accounts_page"/>
      <node name="Accounts" url="account_create.vspx" id="5" place="1" allowed="yacutia_accounts_page"/>
      <node name="Accounts" url="account_remove.vspx" id="6" place="1" allowed="yacutia_accounts_page"/>
+     <node name="Accounts" url="account_key_remove.vspx" id="7" place="1" allowed="yacutia_accounts_page"/>
      <node name="Roles" url="roles.vspx" id="7" place="1" allowed="yacutia_accounts_page"/>
      <node name="Roles" url="role_remove.vspx" id="8" place="1" allowed="yacutia_accounts_page"/>
      <node name="Grants" url="capabilities.vspx" id="9" place="1" allowed="yacutia_accounts_page"/>
@@ -376,6 +381,7 @@ create procedure adm_menu_tree ()
    <node name="Virtual Domains &amp; Directories" url="http_serv_mgmt.vspx" id="153" allowed="yacutia_http_server_management_page">
       <node name="Edit Paths" url="http_edit_paths.vspx" id="154" place="1" allowed="yacutia_http_server_management_page"/>
       <node name="Add Path" url="http_add_path.vspx" id="155" place="1" allowed="yacutia_http_server_management_page"/>
+      <node name="Edit Path" url="http_svc_edit.vspx" id="155" place="1" allowed="yacutia_http_server_management_page"/>
       <node name="Edit Host" url="http_host_edit.vspx" id="170" place="1" allowed="yacutia_http_server_management_page"/>
       <node name="Clone Host" url="http_host_clone.vspx" id="175" place="1" allowed="yacutia_http_server_management_page"/>
       <node name="Delete Path" url="http_del_path.vspx" id="156" place="1" allowed="yacutia_http_server_management_page"/>
@@ -466,15 +472,15 @@ create procedure adm_menu_tree ()
         <node name="SPARQL ACL" url="sparql_acl.vspx" id="277" place="1" allowed="yacutia_acls"/>
       </node>'
      end,
-   '<node name="Views" url="db_rdf_objects.vspx" id="271" allowed="yacutia_rdf_schema_objects_page"/>
-   <node name="Views" url="db_rdf_class.vspx" id="272" place="1"/>
-   <node name="Views" url="db_rdf_owl.vspx" id="273" place="1"/>
-   <node name="Views" url="db_rdf_view_1.vspx" id="273" place="1"/>
-   <node name="Views" url="db_rdf_view_2.vspx" id="273" place="1"/>
-   <node name="Views" url="db_rdf_view_3.vspx" id="273" place="1"/>
-   <node name="Views" url="db_rdf_view_tb.vspx" id="273" place="1"/>
-   <node name="Views" url="db_rdf_view_cols.vspx" id="273" place="1"/>
-   <node name="Views" url="db_rdf_view_pk.vspx" id="273" place="1"/>',
+   '<node name="RDF Views" url="db_rdf_objects.vspx" id="271" allowed="yacutia_rdf_schema_objects_page"/>
+   <node name="RDF Views" url="db_rdf_class.vspx" id="272" place="1"/>
+   <node name="RDF Views" url="db_rdf_owl.vspx" id="273" place="1"/>
+   <node name="RDF Views" url="db_rdf_view_1.vspx" id="273" place="1"/>
+   <node name="RDF Views" url="db_rdf_view_2.vspx" id="273" place="1"/>
+   <node name="RDF Views" url="db_rdf_view_3.vspx" id="273" place="1"/>
+   <node name="RDF Views" url="db_rdf_view_tb.vspx" id="273" place="1"/>
+   <node name="RDF Views" url="db_rdf_view_cols.vspx" id="273" place="1"/>
+   <node name="RDF Views" url="db_rdf_view_pk.vspx" id="273" place="1"/>',
    case when check_package('rdb2rdf') then
   '<node name="R2RML" url="r2rml_import.vspx" id="273" />
    <node name="R2RML" url="r2rml_validate.vspx" id="273" place="1"/>
@@ -821,6 +827,10 @@ y_sql_user_password_check (in name varchar, in pass varchar)
     rc := 1;
   else if (not length (nonce) and pass1 = pass)
     rc := 1;
+
+  -- no grant for any page, even main page
+  if (check_grants (name, 'nobody') = 0)
+    rc := 0;
 
   if (rc and (ltm is null or ltm < dateadd ('minute', -2, now ())))
     {
@@ -1471,7 +1481,7 @@ create procedure "PUMP"."DBA"."GET_DSN" () returns varchar
   while ( nitems >= 0 ) {
     item := cfg_item_name(virtuoso_ini_path(), sect, nitems);
     if (equ(item,'ServerPort')) {
-      port := cfg_item_value(virtuoso_ini_path(), sect, item);
+      port := virtuoso_ini_item_value (sect, item);
       goto next;
     }
     nitems := nitems - 1;
@@ -3223,7 +3233,7 @@ create procedure adm_get_users (in mask any := '%', in ord any := '', in seq any
 }
 ;
 
-create procedure adm_get_all_users (in mask any := '%', in ord any := '', in seq any := 'asc')
+create procedure DB.DBA.adm_get_all_users (in mask any := '%', in ord any := '', in seq any := 'asc')
 {
   declare sql, dta, mdta, rc, h, tmp any;
 
@@ -3249,9 +3259,9 @@ create procedure adm_get_all_users (in mask any := '%', in ord any := '', in seq
 }
 ;
 
-yacutia_exec_no_error('create procedure view Y_SYS_USERS_USERS as adm_get_users (mask, ord, seq) (U_NAME varchar, U_FULL_NAME varchar, U_LOGIN_TIME datetime, U_EDIT_TIME datetime)');
+yacutia_exec_no_error('create procedure view DB.DBA.Y_SYS_USERS_USERS as DB.DBA.adm_get_users (mask, ord, seq) (U_NAME varchar, U_FULL_NAME varchar, U_LOGIN_TIME datetime, U_EDIT_TIME datetime)');
 
-yacutia_exec_no_error('create procedure view Y_SYS_USERS as adm_get_all_users (mask, ord, seq) (U_NAME varchar, U_FULL_NAME varchar, U_IS_ROLE int)');
+yacutia_exec_no_error('create procedure view DB.DBA.Y_SYS_USERS as DB.DBA.adm_get_all_users (mask, ord, seq) (U_NAME varchar, U_FULL_NAME varchar, U_IS_ROLE int)');
 
 create procedure adm_get_scheduled_events (
   in ord any := 'name',
@@ -4308,7 +4318,7 @@ create procedure www_tree (in path any)
 
        HP_NO_EDIT := case HOST when '*ini*' then 0 when '*sslini*' then 0 else 1 end;
        HP_NO_CTRL := case LHOST when '*ini*' then 0 when '*sslini*' then 0
-    when (':' || cfg_item_value (virtuoso_ini_path(), 'HTTPServer', 'SSLPort')) then 0
+    when (':' || virtuoso_ini_item_value ('HTTPServer', 'SSLPort')) then 0
     else 1 end;
 
        vhost := HOST;
@@ -4319,13 +4329,13 @@ create procedure www_tree (in path any)
        if (vhost = '*ini*')
    {
      vhost := '{Default Web Site}';
-     port := cfg_item_value (virtuoso_ini_path (), 'HTTPServer', 'ServerPort');
+     port := virtuoso_ini_item_value ('HTTPServer', 'ServerPort');
      intf := '0.0.0.0';
    }
        else if (vhost = '*sslini*')
    {
            vhost := '{Default SSL Web Site}';
-     port := cfg_item_value (virtuoso_ini_path (), 'HTTPServer', 'SSLPort');
+     port := virtuoso_ini_item_value ('HTTPServer', 'SSLPort');
      if (port is null)
        port := '';
      intf := '0.0.0.0';
@@ -4337,9 +4347,9 @@ create procedure www_tree (in path any)
      if (intf = '' or intf = '*ini*' or intf = '*sslini*')
        {
 	   if (intf = '*ini*')
-	     port := cfg_item_value (virtuoso_ini_path (), 'HTTPServer', 'ServerPort');
+	     port := virtuoso_ini_item_value ('HTTPServer', 'ServerPort');
 	   else if (intf = '*sslini*')
-	     port := cfg_item_value (virtuoso_ini_path (), 'HTTPServer', 'SSLPort');
+	     port := virtuoso_ini_item_value ('HTTPServer', 'SSLPort');
           intf := '0.0.0.0';
        }
    }
@@ -4769,7 +4779,7 @@ create procedure y_check_host (in host varchar, in listen varchar, in port varch
   declare inihost, ihost, iport varchar;
   declare pos int;
 
-  inihost := cfg_item_value (virtuoso_ini_path (), 'HTTPServer', 'ServerPort');
+  inihost := virtuoso_ini_item_value ('HTTPServer', 'ServerPort');
 
   pos := strrchr (inihost, ':');
 
@@ -5181,7 +5191,7 @@ create procedure yac_vec_add (in k varchar, in v varchar, inout opts any)
 
 
 create procedure
-yac_set_ssl_key (in k varchar, in v varchar, in extra varchar, inout opts any)
+yac_set_ssl_key (in k varchar, in v varchar, in extra varchar, inout opts any, in ca_certs varchar := null)
 {
   if (k = 'none' or not length (k))
     {
@@ -5189,7 +5199,7 @@ yac_set_ssl_key (in k varchar, in v varchar, in extra varchar, inout opts any)
       new_opts := vector ();
       for (declare i, l int, i := 0, l := length (opts); i < l; i := i + 2)
         {
-	  if (opts[i] not in ('https_cert', 'https_key', 'https_verify', 'https_cv_depth', 'https_extra_chain_certificates'))
+	  if (opts[i] not in ('https_cert', 'https_key', 'https_verify', 'https_cv_depth', 'https_extra_chain_certificates', 'https_cv'))
 	    new_opts := vector_concat (new_opts, vector (opts[i], opts[i+1]));
 	}
       opts := new_opts;
@@ -5201,6 +5211,7 @@ yac_set_ssl_key (in k varchar, in v varchar, in extra varchar, inout opts any)
       yac_vec_add ('https_extra_chain_certificates', extra, opts);
       yac_vec_add ('https_verify', cast (v as int), opts);
       yac_vec_add ('https_cv_depth', 10, opts);
+      yac_vec_add ('https_cv', ca_certs, opts);
     }
 }
 ;
@@ -5476,16 +5487,6 @@ create procedure DB.DBA.BACKUP_MAKE_CL (in prefix varchar, in max_pages integer,
 }
 ;
 
-create procedure Y_RDF_VIEW_DROP_STMT (in q any)
-{
-  if (__proc_exists ('DB.DBA.RDF_VIEW_DROP_STMT') is not null)
-    return RDF_VIEW_DROP_STMT (q);
-  else
-    return '';
-
-}
-;
-
 create procedure Y_SQL_ESC_NAME (in fn varchar)
 {
   declare q, o, n, tmp any;
@@ -5563,7 +5564,7 @@ create procedure  y_csv_get_cols (inout ss any, in hr int, in offs int, in opts 
       for (inx := offs; inx < length (h); inx := inx + 1)
        {
 	 _row := h[inx];
-         for (j := 0; j < length (_row); j := j + 1)
+         for (j := 0; j < __min(length (_row), length (res)); j := j + 1)
 	   {
 	     if (res[j][1] is null and not (isstring (_row[j]) and _row[j] = '') and _row[j] is not null)
                res[j][1] := __tag (_row[j]);
@@ -5807,7 +5808,7 @@ create procedure y_list_webids (in uname varchar)
       if (tp = 'X.509')
 	{
 	  fmt := x[1];
-	  cert := x[2];
+	  cert := cast (x[2] as varchar);
 	  pass := x[3];
 	  if (fmt = 3)
 	    fmt := 1;
@@ -5955,6 +5956,9 @@ make_cert_stmt (in key_name varchar, in digest_type varchar := 'sha1')
   if (san is null) san := make_cert_iri (key_name);
   if (ian is null) ian := make_cert_iri (key_name);
 
+  if (aref(info, 0) <> 'RSAPublicKey')
+    return 'SPARQL {}'; -- only RSA is supported in cert ontology(for now)
+
   cert_exponent    := info[1];
   cert_modulus     := bin2hex(info[2]);
   cert_fingerprint := replace (cert_fingerprint, ':', '');
@@ -5999,7 +6003,7 @@ INTO GRAPH <http://%{WSHost}s/pki>
     key_iri, cert_modulus, cert_exponent,
     webid, cer_iri,
     cer_iri, cert_fingerprint, digest_type, cert_subject, cert_issuer,
-    DB..date_iso8601 (DB.DBA.X509_STRING_DATE (cert_val_not_before)), DB..date_iso8601 (DB.DBA.X509_STRING_DATE (cert_val_not_after)),
+    DB..date_iso8601 (DB..X509_STRING_DATE (cert_val_not_before)), DB..date_iso8601 (DB..X509_STRING_DATE (cert_val_not_after)),
     cert_serial, tag,
     case when san is not null then sprintf ('oplcert:subjectAltName <%s> ; ', san) else '' end,
     case when ian is not null then sprintf ('oplcert:issuerAltName <%s> ;', ian) else '' end,
@@ -6107,6 +6111,22 @@ create procedure y_wide2utf (
 }
 ;
 
+create procedure registry_name_is_idn (in name varchar)
+{
+  declare arr any;
+  arr := sprintf_inverse (name, '%s.%s.%s.%s.%s.%s', 1);
+  if (not isvector (arr) and length (arr) <> 6)
+    return 0;
+  if (arr[0] <> arr[2] and arr[1] <> arr[3])
+    return 0;
+  if (not table_exists (sprintf ('%s.%s.%s', arr[2], arr[3], arr[4])))
+    return 0;
+  if (not exists (select 1 from SYS_COLS where "TABLE" = sprintf ('%s.%s.%s', arr[2], arr[3], arr[4]) and "COLUMN" = arr[5]))
+    return 0;
+  return 1;
+}
+;
+
 create procedure y_registries (
   in _filter varchar := '')
 {
@@ -6121,11 +6141,199 @@ create procedure y_registries (
   {
     v0 := cast (V[N] as varchar);
     v1 := subseq (V[N+1], 0, 1024);
+    if (registry_name_is_protected (v0))
+      goto _skip;
+    if (registry_name_is_idn (v0))
+      goto _skip;
     if ((_filter <> '') and (v0 not like _filter))
       goto _skip;
 
     result (v0, v1);
   _skip:;
   }
+}
+;
+
+create procedure y_sys_stat(
+  in _key varchar := '')
+{
+  declare val any;
+  val := '';
+  {
+    -- catch error when using old binaries
+    declare continue handler for sqlstate '*';
+
+    -- next line can fail on older ports
+    val := sys_stat (_key);
+  }
+
+  return val;
+}
+;
+
+create procedure DB.DBA.x509_DN_RFC_check (in dn any)
+{
+  declare dno any;
+  declare len, i int;
+  len := length (dn);
+  dno := vector ('C', NULL, 'ST', NULL,  'L', NULL, 'O', NULL, 'OU', NULL, 'CN', NULL, 'email', NULL);
+
+  for (i := 0; i < len; i := i + 2)
+    {
+      declare pos int;
+      if (0 < (pos := position (dn[i], dno)))
+        {
+          dno[pos] := dn[i+1];
+        }
+      else
+        {
+          dno := vector_concat (dno, vector (dn[i], dn[i+1]));
+        }
+    }
+  return DB.DBA.VECTOR_ZAP_EMPTY_OPTIONS (dno);
+}
+;
+
+create procedure DB.DBA.LOCAL_CA_GEN (in ca_key_name varchar := 'id_rsa', in bits int := 2048, in dn any := null, in days int := 356, in force int := 0)
+{
+  declare serial int;
+  declare san varchar;
+  declare exts any;
+
+  serial := deserialize (hex2bin('F700' || subseq (bin2hex (xenc_digest (uuid(), 'sha256')), 0, 14)));
+  if (xenc_key_exists (ca_key_name) and force)
+    xenc_key_remove (ca_key_name);
+  if (xenc_key_exists (ca_key_name))
+    return 'KEY EXISTS';
+  if (dn is null)
+    dn := vector ('CN', 'ROOT CA');
+  dn := x509_DN_RFC_check (dn);
+  if (0 = length (dn))
+    return 'DIRECTORY NAME IS EMPTY';
+  san := null;
+  if (vad_check_version ('conductor') is not null)
+    san := vector ('subjectAltName', 'URI:' || DB.DBA.make_cert_iri (ca_key_name));
+
+  exts :=  vector_concat (
+    vector ('basicConstraints', 'critical,CA:TRUE',
+            'authorityKeyIdentifier', 'keyid,issuer:always',
+            'keyUsage', 'critical,nonRepudiation,keyEncipherment,dataEncipherment,cRLSign,keyCertSign,digitalSignature,keyAgreement'),
+    san);
+
+  xenc_key_RSA_create (ca_key_name, bits);
+  xenc_x509_ss_generate (ca_key_name, 1, days, dn, exts, 0, 'sha256');
+  string_to_file (ca_key_name || '.p12', xenc_pkcs12_export (ca_key_name, 'CA ROOT Key', ''), -2);
+  USER_KEY_STORE (user, ca_key_name, 'X.509', 2, NULL, cast (xenc_pkcs12_export (ca_key_name, ca_key_name, '') as varchar));
+  commit work;
+  if (san is not null and vad_check_version ('conductor') is not null)
+    exec (DB.DBA.make_cert_stmt (ca_key_name));
+  return 'CREATED';
+}
+;
+
+create procedure DB.DBA.LOCAL_CA_RENEW (in ca_key_name varchar := 'id_rsa', in days int := 356, in force int := 0)
+{
+  declare serial int;
+  declare key_backup_name, key_iri varchar;
+  declare expiration_date datetime;
+  declare exts, san any;
+
+  expiration_date := X509_STRING_DATE (get_certificate_info (5, ca_key_name, 3)); -- for newer builds get_certificate_info (17, ca_key_name, 3)
+  if (0 = force and datediff ('day', now(), expiration_date) > 0)
+    return 'NOT EXPIRED';
+  key_backup_name := ca_key_name || '.backup';
+  serial := deserialize (hex2bin('F700' || subseq (bin2hex (xenc_digest (uuid(), 'sha256')), 0, 14)));
+  if (xenc_key_exists (key_backup_name) and force)
+    xenc_key_remove (key_backup_name);
+  USER_KEY_LOAD (key_backup_name, cast (xenc_pkcs12_export (ca_key_name, ca_key_name, '') as varchar), 'X.509', 'PKCS12', '');
+  xenc_key_remove (ca_key_name);
+  xenc_key_pem_import (ca_key_name, xenc_pem_export (key_backup_name, 1));
+  if (vad_check_version ('conductor') is not null)
+    {
+      key_iri := DB.DBA.make_cert_iri (ca_key_name);
+      san := vector ('subjectAltName', 'URI:' || key_iri);
+    }
+  exts :=  vector_concat (
+    vector ('basicConstraints', 'critical,CA:TRUE',
+            'authorityKeyIdentifier', 'keyid,issuer:always',
+            'keyUsage', 'critical,nonRepudiation,keyEncipherment,dataEncipherment,cRLSign,keyCertSign,digitalSignature,keyAgreement'), san);
+  xenc_x509_ss_generate (ca_key_name, serial, days, get_certificate_info (11, key_backup_name, 3), exts, 0, 'sha256');
+  USER_KEY_STORE (user, ca_key_name, 'X.509', 2, NULL, cast (xenc_pkcs12_export (ca_key_name, ca_key_name, '') as varchar));
+  commit work;
+  if (san is not null and vad_check_version ('conductor') is not null)
+    {
+      exec (sprintf ('SPARQL WITH <http://%{WSHost}s/pki> DELETE { ?s ?p ?o } WHERE { ?s ?p ?o . FILTER (?s = <%s>) }', key_iri));
+      exec (DB.DBA.make_cert_stmt (ca_key_name));
+    }
+  return 'RENEWED';
+}
+;
+
+create procedure DB.DBA.HTTPS_MAKE_HOST_KEY (in cname varchar, in alt_names varchar := null)
+{
+  declare kname, san varchar;
+  declare serial int;
+  declare alt_hosts any;
+  alt_hosts := string_split (alt_names);
+  san := 'DNS:'||cname;
+  foreach (varchar cn in alt_hosts) do
+    {
+      san := concat (san, ', DNS:', cn);
+    }
+  serial := deserialize (hex2bin('F700' || subseq (bin2hex (xenc_digest (uuid(), 'sha256')), 0, 14)));
+  kname := 'https_key_' || replace (cname, '.', '_');
+  xenc_key_RSA_create (kname, 2048);
+  xenc_x509_generate ('id_rsa', kname, serial, 365,
+      vector ('CN', cname),
+      vector (
+        'keyUsage', 'critical,keyEncipherment,digitalSignature',
+        'extendedKeyUsage', 'serverAuth',
+        'basicConstraints', 'critical,CA:FALSE',
+        'authorityKeyIdentifier', 'keyid,issuer:always',
+        'subjectAltName', san
+        ));
+  USER_KEY_STORE (user, kname, 'X.509', 2, '', cast (xenc_pkcs12_export (kname, cname || ' key', '') as varchar));
+  return kname;
+}
+;
+
+create procedure DB.DBA.GET_CERT_DNS_NAMES (in kname varchar)
+{
+  declare san, sans, dns, dns_names varchar;
+  declare pos int;
+  san := get_certificate_info (7, kname, 3, null, 'subjectAltName');
+  san := replace (san, ' ', '');
+  sans := split_and_decode (san, 0, '\0\0,:');
+  dns_names := vector ();
+  pos := 0;
+  while (sans is not null and (pos := position ('DNS', sans, pos)) > 0)
+    {
+      dns := sans[pos];
+      pos := pos + 2;
+      dns_names := vector_concat (dns_names, vector (dns));
+    }
+  return dns_names;
+}
+;
+
+create procedure DB.DBA.CHECK_VHOST_NAME_CERT (in vhost varchar, in kname varchar)
+{
+  declare x509, subj, dns_names, cname any;
+  if (not xenc_key_exists (kname))
+    signal ('VH001', 'Key is required to setup HTTPS listener');
+  x509 := xenc_X509_certificate_serialize (kname);
+  if (x509 is null)
+    signal ('VH002',  'Can not get certificate from key, please generate new or use key with certificate assigned.');
+  x509 := decode_base64 (x509);
+  subj := get_certificate_info (11, kname, 3);
+  cname := get_keyword ('CN', subj, '');
+  dns_names := DB.DBA.GET_CERT_DNS_NAMES (kname);
+  if (length (vhost) = 0 and length (dns_names) > 1)
+    return NULL;
+  if (length (vhost) = 0)
+    signal ('VH003',  'You should provide a valid host name'); 
+  if (0 = matches_like (vhost, cname) and 0 = position (vhost, dns_names))
+    signal ('VH004',  'The certificate common name do not match host name, please generate new or select appropriate key.');
+  return NULL;
 }
 ;

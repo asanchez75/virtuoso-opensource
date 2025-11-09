@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -133,7 +133,7 @@ create procedure DB.DBA.RDF_GRAB_PREPARE_PRIVATE (in graph_iri varchar, in group
   if (group_iri in (UNAME'http://www.openlinksw.com/schemas/virtrdf#PrivateGraphs', UNAME'http://www.openlinksw.com/schemas/virtrdf#rdf_repl_graph_group'))
     signal ('RDFGS', sprintf ('A SPARQL query with get:private tries to add graph <%.500s> to special graph group <%.500s>', graph_iri, group_iri));
 -- If graph name is an IRI of handshaked web service endpoint then an error is signaled.
-  if (exists (sparql define input:storage "" ask from virtrdf:
+  if ((sparql define input:storage "" ask from virtrdf:
       where { `iri(?:graph_iri)` virtrdf:dialect|virtrdf:isEndpointOfService|^virtrdf:isEndpointOfService ?o } ) )
     signal ('RDFGS', sprintf ('A SPARQL query with get:private tries to change access permissions of graph <%.500s> but the graph is a known web service endpoint', graph_iri));
 -- If access is public by default even for private graphs then an error is signaled and sponging is not tried.
@@ -233,6 +233,7 @@ create function DB.DBA.RDF_GRAB_SINGLE (in val any, inout grabbed any, inout env
       final_gdest := get_keyword ('get:group-destination', env);
       opts := vector (
         'get:soft', get_keyword_ucase ('get:soft', env, 'soft'),
+        'get:accept', get_keyword ('get:accept', env, null),
         'get:refresh', get_keyword_ucase ('get:refresh', env),
         'get:method', get_method,
         'get:destination', final_dest,
@@ -1252,9 +1253,9 @@ no_cr:
     return 'text/turtle';
   msg := DB.DBA.RDF_SPONGE_TRY_TTL (512, ret_begin);
   if ('' = msg)
-    return 'text/x-nquads';
+    return 'application/n-quads';
   if (last_cr_pos is not null and DB.DBA.RDF_SPONGE_TRY_TTL (512, shorter_ret_begin) <> msg)
-    return 'text/x-nquads';
+    return 'application/n-quads';
   msg := DB.DBA.RDF_SPONGE_TRY_TTL (256, ret_begin);
   if ('' = msg)
     return 'application/x-trig';
@@ -1293,64 +1294,80 @@ no_cr:
 }
 ;
 
-
 -- /* guess the content type */
 create function DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE (in origin_uri varchar, in ret_content_type varchar, inout ret_body any) returns varchar
 {
-  declare guessed_ret_type varchar;
-  -- dbg_obj_princ ('DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE (', origin_uri, ret_content_type, '...)');
-  if (ret_content_type is not null)
-    {
-      if (strstr (ret_content_type, 'application/sparql-results+xml') is not null)
-        return 'application/sparql-results+xml';
-      if (strstr (ret_content_type, 'application/rdf+xml') is not null)
-        return 'application/rdf+xml';
-      if (strstr (ret_content_type, 'text/rdf+ttl') is not null or
-        strstr (ret_content_type, 'text/rdf+turtle') is not null or
-        strstr (ret_content_type, 'text/turtle') is not null or
-        strstr (ret_content_type, 'application/x-turtle') is not null or
-        strstr (ret_content_type, 'application/turtle') is not null )
-        return 'text/turtle';
-      if (strstr (ret_content_type, 'text/n3') is not null or
-        strstr (ret_content_type, 'text/rdf+n3') is not null )
-        return 'text/rdf+n3';
-      if (strstr (ret_content_type, 'application/x-trig') is not null)
-        return 'application/x-trig';
-      if (strstr (ret_content_type, 'text/x-nquads') is not null)
-        return 'text/x-nquads';
-    }
-  declare ret_begin, ret_html any;
-  ret_begin := subseq (ret_body, 0, 65535);
-  if (isstring_session (ret_begin))
-    ret_begin := string_output_string (ret_begin);
-  -- dbg_obj_princ ('DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE: ret_begin = ', ret_begin);
-  ret_html := xtree_doc (ret_begin, 2);
-  -- dbg_obj_princ ('DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE: ret_html = ', ret_html);
-  if (xpath_eval ('[xmlns:xh="http://www.w3.org/1999/xhtml"] /html|/xhtml|/xh:html|/xh:xhtml', ret_html) is not null)
-    {
-      if (xpath_eval ('[xmlns:grddl="http://www.w3.org/2003/g/data-view#"] /*/@grddl:transformation', ret_html) is not null)
-        return 'text/html'; -- GRDDL stylesheet is most authoritative
-      if (xpath_eval ('/*/head/@profile', ret_html) is not null)
-        return 'text/html'; -- GRDDL inline profile is authoritative, too
-      if (xpath_eval ('//*[exists(@itemscope) or exists(@itemprop) or exists(@itemid) or exists(@itemtype)]', ret_html) is not null)
-        return 'text/microdata+html'; -- Microdata are tested before RDFa because metadata with @rel may be wrongly recognised as RDFa
-      -- if (xpath_eval ('//*[exists(@rel) or exists(@rev) or exists(@typeof) or exists(@property) or exists(@about)]', ret_html) is not null)
-      if (xpath_eval ('//*[exists(@typeof) or exists(@about)]', ret_html) is not null)
-        return 'application/xhtml+xml';
-    return 'text/html';
-    }
-  if (xpath_eval ('[xmlns:rset="http://www.w3.org/2005/sparql-results#"] /rset:sparql', ret_html) is not null
-    or xpath_eval ('[xmlns:rset2="http://www.w3.org/2001/sw/DataAccess/rf1/result2"] /rset2:sparql', ret_html) is not null)
-    return 'application/sparql-results+xml';
-  if (xpath_eval ('[xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"] /rdf:rdf', ret_html) is not null)
-    return 'application/rdf+xml';
-  if (strstr (ret_begin, '<html>') is not null or
-    strstr (ret_begin, '<xhtml>') is not null )
-    return 'text/html';
-  guessed_ret_type := DB.DBA.RDF_SPONGE_GUESS_TTL_CONTENT_TYPE (origin_uri, ret_content_type, ret_body, ret_begin);
-  if (guessed_ret_type is not null)
-    return guessed_ret_type;
-  return ret_content_type;
+	declare guessed_ret_type varchar;
+	-- dbg_obj_princ ('DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE (', origin_uri, ret_content_type, '...)');
+	if (ret_content_type is not null)
+	{
+		if (strstr (ret_content_type, 'application/sparql-results+xml') is not null)
+			return 'application/sparql-results+xml';
+		if (strstr (ret_content_type, 'application/rdf+xml') is not null)
+			return 'application/rdf+xml';
+		if (strstr (ret_content_type, 'text/rdf+ttl') is not null or
+			strstr (ret_content_type, 'text/rdf+turtle') is not null or
+			strstr (ret_content_type, 'text/turtle') is not null or
+			strstr (ret_content_type, 'application/x-turtle') is not null or
+			strstr (ret_content_type, 'application/turtle') is not null )
+			return 'text/turtle';
+		if (strstr (ret_content_type, 'text/n3') is not null or
+			strstr (ret_content_type, 'text/rdf+n3') is not null )
+			return 'text/rdf+n3';
+		if (strstr (ret_content_type, 'application/x-trig') is not null)
+			return 'application/x-trig';
+		if (strstr (ret_content_type, 'application/n-quads') is not null)
+			return 'application/n-quads';
+	}
+	declare ret_begin, ret_html any;
+	ret_begin := subseq (ret_body, 0, 65535);
+	if (isstring_session (ret_begin))
+		ret_begin := string_output_string (ret_begin);
+	-- dbg_obj_princ ('DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE: ret_begin = ', ret_begin);
+	ret_html := xtree_doc (ret_begin, 2);
+	-- dbg_obj_princ ('DB.DBA.RDF_SPONGE_GUESS_CONTENT_TYPE: ret_html = ', ret_html);
+	if (xpath_eval ('[xmlns:xh="http://www.w3.org/1999/xhtml"] /html|/xhtml|/xh:html|/xh:xhtml', ret_html) is not null)
+	{
+		if (xpath_eval ('[xmlns:grddl="http://www.w3.org/2003/g/data-view#"] /*/@grddl:transformation', ret_html) is not null)
+			return 'text/html'; -- GRDDL stylesheet is most authoritative
+		if (xpath_eval ('/*/head/@profile', ret_html) is not null)
+			return 'text/html'; -- GRDDL inline profile is authoritative, too
+		if (xpath_eval ('//*[exists(@itemscope) or exists(@itemprop) or exists(@itemid) or exists(@itemtype)]', ret_html) is not null)
+			return 'text/microdata+html'; -- Microdata are tested before RDFa because metadata with @rel may be wrongly recognised as RDFa
+		-- if (xpath_eval ('//*[exists(@rel) or exists(@rev) or exists(@typeof) or exists(@property) or exists(@about)]', ret_html) is not null)
+		if (xpath_eval ('//*[exists(@typeof) or exists(@about)]', ret_html) is not null)
+			return 'application/xhtml+xml';
+		return 'text/html';
+	}
+	if (xpath_eval ('[xmlns:rset="http://www.w3.org/2005/sparql-results#"] /rset:sparql', ret_html) is not null
+		or xpath_eval ('[xmlns:rset2="http://www.w3.org/2001/sw/DataAccess/rf1/result2"] /rset2:sparql', ret_html) is not null)
+		return 'application/sparql-results+xml';
+	if (xpath_eval ('[xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"] /rdf:rdf', ret_html) is not null)
+		return 'application/rdf+xml';
+        -- we may guess html if and only if text/plain and nothing else, also html/xhtml should be at start of document
+        if ((ret_content_type is null or
+            strstr (ret_content_type, 'text/plain') is not null or
+            strstr (ret_content_type, 'application/octet-stream') is not null)
+            and regexp_match('^(?:\\s*(?:<\\?xml[^>]+>|<!\x2d\x2d.*?\x2d\x2d>|<!DOCTYPE[^>]+>))*\\s*<x?html', ret_begin, 0, 'ig') is not null)
+            return 'text/html';
+	declare exit handler for sqlstate '*'
+	{
+		goto next;
+	};
+        declare jt any;
+        jt := json_parse(cast (ret_body as varchar));
+        if (length(jt) > 0 and
+            (get_keyword ('@context', jt) is not null or
+            get_keyword ('@id', jt) is not null or
+            get_keyword ('@type', jt) is not null))
+          return 'application/ld+json';
+	if (length(jt) > 0)
+	  return 'application/json';
+	next:;
+	guessed_ret_type := DB.DBA.RDF_SPONGE_GUESS_TTL_CONTENT_TYPE (origin_uri, ret_content_type, ret_body, ret_begin);
+	if (guessed_ret_type is not null)
+		return guessed_ret_type;
+	return ret_content_type;
 }
 ;
 
@@ -1376,48 +1393,16 @@ create procedure DB.DBA.RDF_HTTP_URL_GET (inout url any, in base any, inout hdr 
 	in meth any := 'GET', in req_hdr varchar := null, in cnt any := null, in proxy any := null, in sig int := 1)
 {
   declare content varchar;
-  declare olduri, req_hdr_orig varchar;
   --declare hdr any;
-  declare redirects, is_https int;
   -- dbg_obj_princ ('DB.DBA.RDF_HTTP_URL_GET (', url, base, ')');
 
-  req_hdr_orig := req_hdr;
   hdr := null;
-  redirects := 15;
   url := WS.WS.EXPAND_URL (base, url);
-  again:
-  olduri := url;
-  if (redirects <= 0)
-    signal ('22023', 'Too many HTTP redirects', 'RDFXX');
 
-  if (lower (url) like 'https://%' and proxy is not null)
-    signal ('22023', 'The HTTPS retrieval is not supported via proxy', 'RDFXX');
-  is_https := 0;
-  if (lower (url) like 'https://%')
-    is_https := 1;
-
-  if (proxy is null)
-    content := http_client_ext (url=>url, headers=>hdr, http_method=>meth, http_headers=>req_hdr, body=>cnt);
-  else
-    content := http_get (url, hdr, meth, req_hdr, cnt, proxy);
-  redirects := redirects - 1;
+  content := http_client_ext (url=>url, headers=>hdr, http_method=>meth, http_headers=>req_hdr, body=>cnt, proxy=>proxy, n_redirects=>15, accept_cookies=>1);
 
   if (hdr[0] not like 'HTTP/1._ 200 %' and hdr[0] not like 'HTTP/1._ 203 %')
     {
-      if (hdr[0] like 'HTTP/1._ 30_ %' and hdr[0] not like 'HTTP/1._ 304 %')
-	{
-	  url := http_request_header (hdr, 'Location');
-	  if (isstring (url))
-	    {
-	      declare cookie_hdr varchar;
-	      url := WS.WS.EXPAND_URL (olduri, url);
-	      req_hdr := req_hdr_orig;
-	      cookie_hdr := DB.DBA.COOKIE_HDR (olduri, hdr, url);
-	      if (length (cookie_hdr))
-	        req_hdr := req_hdr || '\r\n' || cookie_hdr;
-	      goto again;
-	    }
-	}
       if (sig)
         signal ('22023', trim(hdr[0], '\r\n'), 'RDFXX');
       -- dbg_obj_princ ('DB.DBA.RDF_HTTP_URL_GET (', url, base, ') failed to download ', url);
@@ -1551,11 +1536,13 @@ create procedure DB.DBA.RDF_PROC_COLS (in pname varchar)
 create function DB.DBA.RDF_PROXY_GET_HTTP_HOST ()
 {
     declare default_host, cname, xhost varchar;
+    declare lines any;
     xhost := connection_get ('http_host');
     if (isstring (xhost))
       return xhost;
-    if (is_http_ctx ())
-        default_host := http_request_header(http_request_header (), 'Host', null, null);
+    lines := http_request_header ();
+    if (isvector(lines))
+        default_host := http_request_header(lines, 'Host', null, null);
     else if (connection_get ('__http_host') is not null)
         default_host := connection_get ('__http_host');
     else
@@ -1783,7 +1770,7 @@ retry_after_deadlock:
     strstr (ret_content_type, 'application/x-trig') is not null)
     ttl_mode := 256+255;
   else if (
-    strstr (ret_content_type, 'text/x-nquads') is not null)
+    strstr (ret_content_type, 'application/n-quads') is not null)
     ttl_mode := 512+255;
   if (ttl_mode is not null)
     {
@@ -2090,6 +2077,8 @@ create function DB.DBA.RDF_SPONGE_UP_1 (in graph_iri varchar, in options any, in
   declare perms, log_mode integer;
   -- dbg_obj_princ ('DB.DBA.RDF_SPONGE_UP_1 (', graph_iri, options, ')');
   graph_iri := cast (graph_iri as varchar);
+  if (atoi(coalesce (virtuoso_ini_item_value ('SPARQL', 'IRIValidation'), '0')) > 0 and not iri_validate (graph_iri, 1))
+    signal ('RDFIX', 'Invalid IRI strings are not allowed to sponge');
   --set_user_id ('dba', 1);
   dest := get_keyword_ucase ('get:destination', options);
   if (dest is not null)

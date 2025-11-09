@@ -3,7 +3,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -48,7 +48,6 @@ public class VirtuosoPreparedStatement extends VirtuosoStatement implements Prep
    // The sql string with ?
    protected String sql;
    private static final int _EXECUTE_FAILED = Statement.EXECUTE_FAILED;
-   protected VirtuosoResultSet ps_vresultSet;
 
    /**
     * Constructs a new VirtuosoPreparedStatement that is forward-only and read-only.
@@ -92,7 +91,8 @@ public class VirtuosoPreparedStatement extends VirtuosoStatement implements Prep
 	      // Create a future
 	      future = connection.getFuture(VirtuosoFuture.prepare,args, this.rpc_timeout);
 	      // Process result to get information about results meta data
-	      ps_vresultSet = vresultSet = new VirtuosoResultSet(this,metaData, true);
+	      vresultSet = new VirtuosoResultSet(this,metaData, true);
+	      vresultSet.getMoreResults(true);
 	      result_opened = true;
               clearParameters();
 	    }
@@ -147,6 +147,9 @@ public class VirtuosoPreparedStatement extends VirtuosoStatement implements Prep
              connection.removeFuture(future);
              future = null;
            }
+	
+	 vresultSet.is_complete = true;
+
 	 // Set arguments to the RPC function
 	 args[0] = statid;
 	 args[2] = (cursorName == null) ? args[0] : cursorName;
@@ -160,10 +163,8 @@ public class VirtuosoPreparedStatement extends VirtuosoStatement implements Prep
 	     // Put the options array in the args array
 	     args[5] = getStmtOpts();
 	     future = connection.getFuture(VirtuosoFuture.exec,args, this.rpc_timeout);
-             ps_vresultSet.isLastResult = false;
-	     ps_vresultSet.getMoreResults(false);
-             ps_vresultSet.stmt_n_rows_to_get = this.prefetch;
-             vresultSet = ps_vresultSet;
+             vresultSet = new VirtuosoResultSet(this,metaData, true, vresultSet.kindop());
+ 	     vresultSet.getMoreResults(false);
 	     result_opened = true;
 	   }
 	 catch(IOException e)
@@ -317,14 +318,6 @@ public class VirtuosoPreparedStatement extends VirtuosoStatement implements Prep
       throw new VirtuosoException("Prepared statement closed",VirtuosoException.CLOSED);
    }
 
-
-   /**
-    * Method runs when the garbage collector want to erase the object
-    */
-   public void finalize() throws Throwable
-   {
-      close();
-   }
 
    /**
     * Releases this Statement object's database

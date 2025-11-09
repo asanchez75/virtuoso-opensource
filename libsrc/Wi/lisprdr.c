@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -305,7 +305,7 @@ box_tree_check_1 (caddr_t tree, int print)
     }
   for (inx = 0; inx < tree_fill; inx++)
     {
-      if (tree_map[inx] == tree)
+      if (tree_map[inx] == tree && DV_UNAME != DV_TYPE_OF(tree))
 	{
 	  if (print)
 	    GPF_T1 ("Tree has a cycle");

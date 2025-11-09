@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -153,7 +153,7 @@ caddr_t sqlp_xml_col_name (ST * tree);
 extern int sqlp_xml_col_directive (char *id);
 long sqlp_xml_select_flags (char * mode, char * elt);
 ptrlong sqlp_bunion_flag (ST * l, ST * r, long f);
-ST *sqlp_wpar_nonselect (ST *subq);
+ST *sqlp_wrap_nonselect (ST *subq, int generate_names);
 ST * sqlp_inline_order_by (ST *tree, ST **oby);
 /*! Tweaks special calls and replaces calls of pure functions on costants with results of that functions */
 ST * sqlp_patch_call_if_special_or_optimizable (ST * funcall_tree);
@@ -231,9 +231,9 @@ void sqlp_dt_header (ST * exp);
 caddr_t sqlp_col_num (caddr_t);
 int sqlp_is_num_lit (caddr_t x);
 caddr_t sqlp_minus (caddr_t n);
-char * sqlp_default_cluster ();
-dk_set_t cl_all_host_group_list ();
+char * sqlp_default_cluster (void);
+dk_set_t cl_all_host_group_list (void);
 dk_set_t sqlp_index_default_opts(dk_set_t opts);
-char * sqlp_inx_col_opt ();
+char * sqlp_inx_col_opt (void);
 
 #endif /* _SQLPFN_H */

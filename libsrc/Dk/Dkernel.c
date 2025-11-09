@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -69,6 +69,9 @@ int LEVEL_VAR = 4;
 #include <openssl/rand.h>
 #include <openssl/ec.h>
 #include <openssl/dh.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#endif
 
 #include "util/ssl_compat.h"
 
@@ -152,8 +155,8 @@ dk_mutex_t *value_mtx;
 #define IN_VALUE	mutex_enter (value_mtx)
 #define LEAVE_VALUE	mutex_leave (value_mtx)
 #else
-#define IN_VALUE			 /* no value_mtx for single thread */
-#define LEAVE_VALUE
+#define IN_VALUE	((void)0)			 /* no value_mtx for single thread */
+#define LEAVE_VALUE	((void)0)
 #endif
 
 long connection_count;
@@ -173,6 +176,9 @@ char *c_ssl_server_port;
 char *c_ssl_server_cert;
 char *c_ssl_server_key;
 char *c_ssl_server_extra_certs;
+int32 c_ssl_write_timeout = 10;
+int32 c_ssl_read_timeout = 10;
+
 #endif
 #endif /* GSTATE */
 
@@ -843,7 +849,7 @@ check_inputs (TAKE_G timeout_t * timeout, int is_recursive)
 }
 
 
-long msec_session_dead_time;
+time_msec_t msec_session_dead_time;
 dk_session_t *session_dead;
 
 /*
@@ -967,7 +973,7 @@ sr_report_future_error (dk_session_t * ses, const char *service_name, const char
     {
       char ip_buffer[16] = "", *ipp = &(ip_buffer[0]);
       ptrlong p = 0, *pp;
-      uint32 now = approx_msec_real_time ();
+      time_msec_t now = approx_msec_real_time ();
       tcpses_print_client_ip (ses->dks_session, ip_buffer, sizeof (ip_buffer));
       if (service_name && strlen (service_name) > 0)
 	log_error ("Malformed RPC %.10s received from IP [%.256s] : %.255s. Disconnecting the client", service_name, ip_buffer, reason);
@@ -1222,11 +1228,11 @@ future_wrapper (void *ignore)
 	  future->rq_service->sr_postprocess (result, future);
 	  CB_DONE;
 	}
+      F_RETURNED;
     free_the_future:
       if (this_thread->thr_reset_code)
 	thr_set_error_code (this_thread, NULL);
       dbg_printf_2 (("Done Future %ld on thread %p", future->rq_condition, this_thread));
-      F_RETURNED;
       mutex_enter (thread_mtx);
       if (DKST_FINISH == client->dks_thread_state && !client->dks_to_close && !client->dks_fixed_thread
 	  && 1 == client->dks_n_threads && !in_basket.bsk_count)
@@ -1464,7 +1470,7 @@ future_wrapper (void *ignore)
 
 
 void
-PrpcFixedServerThread ()
+PrpcFixedServerThread (void)
 {
   dk_session_t *ses = IMMEDIATE_CLIENT;
   du_thread_t *self = THREAD_CURRENT_THREAD;
@@ -1923,7 +1929,7 @@ inprocess_request (TAKE_G dk_session_t * ses, caddr_t * request)
 
 
 dk_session_t *
-make_inprocess_session ()
+make_inprocess_session (void)
 {
   char buffer[100];
   dk_session_t *session = inpses_allocate ();
@@ -2036,7 +2042,7 @@ sf_inprocess_ep (void)
 static server_func
 sf_inprocess_ep_wrapper (caddr_t args[])
 {
-  return sf_inprocess_ep();
+  return (server_func) sf_inprocess_ep();
 }
 
 
@@ -2105,7 +2111,7 @@ realize_condition (dk_session_t * ses, long cond, caddr_t value, caddr_t error, 
   future->ft_error = error;
   if (future->ft_timeout.to_sec || future->ft_timeout.to_usec)
     {
-      get_real_time (&future->ft_time_received);
+      future->ft_time_received_msec = get_msec_real_time();
     }
   waiting = future->ft_waiting_requests;
   while (waiting)
@@ -2178,7 +2184,7 @@ partial_realize_condition (dk_session_t * ses, long cond, caddr_t value)
     future->ft_is_ready = FS_RESULT_LIST;
     if (future->ft_timeout.to_sec || future->ft_timeout.to_usec)
       {
-	get_real_time (&future->ft_time_received);
+        future->ft_time_received_msec = get_msec_real_time();
       }
     unfreeze_waiting (PASS_G future);
     LEAVE_VALUE;
@@ -2627,7 +2633,7 @@ accept_client (dk_session_t * ses)
 {
   char ip_buffer[16] = "", *ipp = &(ip_buffer[0]);
   ptrlong p = 0;
-  uint32 now = approx_msec_real_time (), last;
+  time_msec_t now = approx_msec_real_time (), last;
   dk_session_t *newses = dk_session_allocate (ses->dks_session->ses_class);
   without_scheduling_tic ();
   session_accept (ses->dks_session, newses->dks_session);
@@ -2699,65 +2705,50 @@ sesclass_select_func (int sesclass)
 }
 #endif /* NO_THREAD */
 
-timeout_t time_now;
-uint32 time_now_msec;
-
 
 static int
-is_this_timed_out (void *key, future_t * future)	/* MAALIS mty */
+is_this_timed_out (void *key, future_t * future)
 {
-  timeout_t due;
+  time_msec_t due;
+  time_msec_t now = approx_msec_real_time();
   USE_GLOBAL
-#ifndef PMN_MODS
-  /* mty MAALIS 7 lines below */
-  timeout_t tmptime;
-  tmptime.to_sec = time_now.to_sec;
-  tmptime.to_usec = time_now.to_usec;
 
-  /* Test if clock wrapped around */
-  if (time_gt (&future->ft_time_issued, &time_now))
-    {
-      tmptime.to_sec += 60;
-    }
-#endif
-
-  due = future->ft_time_issued;
-  time_add (&due, &future->ft_timeout);
-  if ((future->ft_timeout.to_sec || future->ft_timeout.to_usec) && time_gt (&time_now, &due))
+  due = future->ft_time_issued_msec + future->ft_timeout.to_sec * 1000L + (future->ft_timeout.to_usec / 1000L);
+  if ((future->ft_timeout.to_sec || future->ft_timeout.to_usec) && now > due)
     {
       ss_dprintf_3 (("Future %ld Timed out.", future->ft_request_no));
 
 #ifdef NOT
       printf ("Future %ld timed out\n", future->ft_request_no);
-      printf ("Current time %ld %ld \n", time_now.to_sec, time_now.to_usec);
-      printf ("Future start %ld %ld \n", future->ft_time_issued.to_sec, future->ft_time_issued.to_usec);
+      printf ("Current time " BOXINT_FMT "\n", now);
+      printf ("Future start " BOXINT_FMT "\n", future->ft_time_issued_msec);
       printf ("Future timeout %ld %ld \n", future->ft_timeout.to_sec, future->ft_timeout.to_usec);
-      printf ("Tmptime %ld %ld \n", tmptime.to_sec, tmptime.to_usec);
 #endif
-      realize_condition (future->ft_server, future->ft_request_no, (caddr_t) NULL, (caddr_t) (long) FE_TIMED_OUT, 1);	/* mty MAALIS */
+
+      realize_condition (future->ft_server, future->ft_request_no, (caddr_t) NULL, (caddr_t) (long) FE_TIMED_OUT, 1);
     }
-  return (0);					 /* mty MAALIS */
+  return (0);
 }
 
 
 void
 timeout_round (TAKE_G dk_session_t * ses)
 {
-  static int32 last_time_msec;
-  int32 atomic_msec;
+  static time_msec_t last_time_msec;
+  time_msec_t now;
+  time_msec_t atomic_msec;
   ss_dprintf_2 (("Timeout round."));
 #ifdef NO_THREAD
   if (NULL == ses)				 /* if single thread session must be passed */
     GPF_T;
 #endif
-  get_real_time (&time_now);
-  time_now_msec = time_now.to_sec * 1000 + time_now.to_usec / 1000;
-  atomic_msec = atomic_timeout.to_sec * 1000 + (atomic_timeout.to_usec / 1000);
+  now = get_msec_real_time();
+  atomic_msec = (time_msec_t) atomic_timeout.to_sec * 1000 + (atomic_timeout.to_usec / 1000);
   if (atomic_msec < 100)
     atomic_msec = 100;
-  if ((uint32)time_now_msec - (uint32)last_time_msec < atomic_msec)
+  if (now - last_time_msec < atomic_msec)
     return;
-  last_time_msec = time_now_msec;
+  last_time_msec = now;
 
   if (background_action)
     {
@@ -3449,7 +3440,7 @@ dks_housekeeping_session_count_change (int delta)
 
 
 long
-sf_signal_init ()
+sf_signal_init (void)
 {
   dk_session_t *sig_listen = IMMEDIATE_CLIENT;
   SESSION_SCH_DATA (sig_listen)->sio_default_read_ready_action = (io_action_func) dk_self_signalled;
@@ -3584,7 +3575,7 @@ PrpcIAm (char *name)
 
 #ifdef NOT					 /*PREEMPT, formerly */
 void
-timeout_round_loop ()
+timeout_round_loop (void)
 {
   while (1)
     {
@@ -3659,7 +3650,7 @@ sf_caller_identification (char *name)
 static server_func
 sf_caller_identification_wrapper (caddr_t args[])
 {
-  return sf_caller_identification ((char *)args[0]);
+  return (server_func) sf_caller_identification ((char *)args[0]);
 }
 
 #endif /* NO_THREAD */
@@ -3729,14 +3720,14 @@ log_queue_add_msg (LOG * log, int level, char *buf)
 
 
 void
-log_thread_initialize ()
+log_thread_initialize (void)
 {
   if (!virtuoso_log || !stderr_log || (log_file_line & 0x1) == 0)	/*if no logs then do not use a thread */
     return;
   log_queue_mtx = mutex_allocate ();
   log_worker_thr = PrpcThreadAllocate ((init_func) log_worker_func, 100000, NULL)->dkt_process;
-  virtuoso_log->emitter = log_queue_add_msg;
-  stderr_log->emitter = log_queue_add_msg;
+  virtuoso_log->emitter = (log_emit_func) log_queue_add_msg;
+  stderr_log->emitter = (log_emit_func) log_queue_add_msg;
 }
 #endif
 
@@ -4042,12 +4033,9 @@ PrpcFutureSetTimeout (future_t * future, long msecs)
   USE_GLOBAL
   timeout_t time;
 
-  get_real_time (&time);
-
   future->ft_timeout.to_sec = msecs / 1000;
   future->ft_timeout.to_usec = (msecs % 1000) * 1000;
-  future->ft_time_issued.to_sec = time.to_sec;
-  future->ft_time_issued.to_usec = time.to_usec;
+  future->ft_time_issued_msec = get_msec_real_time ();
   future->ft_server->dks_read_block_timeout = future->ft_timeout;	/* if hangs in mid-message for longer than timeout, then assume broken connection */
   return (future);
 }
@@ -4660,7 +4648,7 @@ PrpcDisconnect (dk_session_t * session)
 
 
 void
-PrpcDisconnectAll ()
+PrpcDisconnectAll (void)
 {
   USE_GLOBAL
   int i;
@@ -4744,7 +4732,7 @@ fd_sets_intersect (fd_set * s1, fd_set * s2)
 
 
 void
-sun_rpc_loop ()
+sun_rpc_loop (void)
 {
   du_thread_t *this_thread = THREAD_CURRENT_THREAD;
   timeout_t to;
@@ -4759,7 +4747,7 @@ sun_rpc_loop ()
 
 
 void
-sun_rpc_ready ()
+sun_rpc_ready (void)
 {
   if (sun_rpc_thread)
     semaphore_leave (sun_rpc_thread->dkt_process->thr_sem);
@@ -5007,7 +4995,7 @@ dk_ssl_free (void *old)
 int ssl_server_set_certificate (SSL_CTX * ssl_ctx, char *cert_name, char *key_name, char *extra);
 
 static int
-ssl_server_key_setup ()
+ssl_server_key_setup (void)
 {
   if (!c_ssl_server_cert || !c_ssl_server_key)
     {
@@ -5076,7 +5064,7 @@ ssl_thread_id (void)
 }
 
 void
-ssl_thread_setup ()
+ssl_thread_setup (void)
 {
   int i;
   lock_cs = (dk_mutex_t **)dk_alloc (CRYPTO_num_locks() * sizeof (dk_mutex_t *));
@@ -5435,9 +5423,13 @@ cleanup:
   return ok;
 }
 
+#if OPENSSL_VERSION_NUMBER > 0x30000000L
+OSSL_PROVIDER *ssl_legacy_provider;
+OSSL_PROVIDER *ssl_deflt_provider;
+#endif
 
 static void
-ssl_server_init ()
+ssl_server_init (void)
 {
   const SSL_METHOD *ssl_server_method;
 
@@ -5450,6 +5442,21 @@ ssl_server_init ()
 
   SSL_load_error_strings ();
   ERR_load_crypto_strings ();
+
+#if OPENSSL_VERSION_NUMBER > 0x30000000L
+  /* Load multiple providers into the default (NULL) library context */
+  ssl_legacy_provider = OSSL_PROVIDER_load(NULL, "legacy");
+  if (ssl_legacy_provider == NULL) {
+     log_error("SSL: failed to load Legacy provider");
+     call_exit (-1);
+  }
+  ssl_deflt_provider = OSSL_PROVIDER_load(NULL, "default");
+  if (ssl_deflt_provider == NULL) {
+     log_error("SSL: failed to load Default provider");
+     OSSL_PROVIDER_unload(ssl_legacy_provider);
+     call_exit (-1);
+  }
+#endif
 
   /*
    *  Make sure the PRNG is properly seeded
@@ -5704,8 +5711,24 @@ ssl_client_use_pkcs12 (SSL * ssl, char *pkcs12file, char *passwd, char *ca)
   return i ? 1 : 0;
 }
 
-
 #ifndef NO_THREAD
+
+int
+ssl_check_connect_timeout (session_t *ses, timeout_t *to, int want)
+{
+  session_t *wses[] = { 0 }, *rses[] = { 0 };
+  int rc;
+
+  if (SSL_ERROR_WANT_WRITE == want)
+    wses[0] = ses;
+  else if (SSL_ERROR_WANT_READ == want)
+    rses[0] = ses;
+  else
+    return SSL_ERROR_SSL;
+  rc = session_select (1, rses, wses, to);
+  return (rc <= 0 ? SSL_ERROR_SSL : SSL_ERROR_NONE);
+}
+
 
 static int
 ssl_server_accept (dk_session_t * listen, dk_session_t * ses)
@@ -5714,32 +5737,64 @@ ssl_server_accept (dk_session_t * listen, dk_session_t * ses)
   if (ses->dks_session->ses_class != SESCLASS_UNIX && ssl_server_port == port && ssl_server_ctx)
     {
       int dst = 0;
+      int block = 0, status = 0;
       int ssl_err = 0;
+      timeout_t to = {20, 0};
       SSL *new_ssl = NULL;
       if (NULL != tcpses_get_ssl (ses->dks_session))
 	SSL_free ((SSL *) tcpses_get_ssl (ses->dks_session));
+      if (c_ssl_read_timeout)
+        to.to_sec = c_ssl_read_timeout;
+      session_set_control (ses->dks_session, SC_BLOCKING, (char *)((void*)&block), sizeof (int));
       dst = tcpses_get_fd (ses->dks_session);
       new_ssl = SSL_new (ssl_server_ctx);
       SSL_set_fd (new_ssl, dst);
-      ssl_err = SSL_accept (new_ssl);
-      if (ssl_err == -1)	/* the SSL_accept do the certificate verification */
+      do
 	{
-	  char client_ip[16];
-	  caddr_t err;
-	  tcpses_print_client_ip (ses->dks_session, client_ip, sizeof (client_ip));
-	  ssl_report_errors (client_ip);
-	  err = ssl_get_x509_error ((caddr_t) new_ssl);
-	  if (err)
+	  int connect_state;
+	  status = SSL_accept (new_ssl);
+	  connect_state = SSL_get_error (new_ssl, status);
+	  switch (connect_state)
 	    {
-	      log_error ("X509 error accepting connection from %s : %s", client_ip, err);
-	      dk_free_box (err);
-	    }
+	    case SSL_ERROR_NONE:
+	      status = 0;
+	      break;
+	    case SSL_ERROR_WANT_READ:
+	    case SSL_ERROR_WANT_WRITE:
+	      if (SSL_ERROR_NONE == ssl_check_connect_timeout (ses->dks_session, &to, connect_state))
+		{
+		  status = 1;
+		  break;
+		}
+	    default:
+	      {
+		char client_ip[16];
+		caddr_t err;
+		tcpses_print_client_ip (ses->dks_session, client_ip, sizeof (client_ip));
+		ssl_report_errors (client_ip);
+		err = ssl_get_x509_error ((caddr_t) new_ssl);
+		if (err)
+		  {
+		    log_error ("X509 error accepting connection from %s : %s", client_ip, err);
+		    dk_free_box (err);
+		  }
 
-	  SSL_free (new_ssl);
-	  PrpcDisconnect (ses);
-	  PrpcSessionFree (ses);
-	  return 0;
+		SSL_free (new_ssl);
+		PrpcDisconnect (ses);
+		PrpcSessionFree (ses);
+		return 0;
+	      }
+	    }
 	}
+      while (1 == status && !SSL_is_init_finished(new_ssl));
+      SSL_set_verify_result(new_ssl, X509_V_OK);
+      if (!c_ssl_write_timeout && !c_ssl_read_timeout)
+        {
+          int rc;
+          block = 1;
+          rc = session_set_control (ses->dks_session, SC_BLOCKING, (char *)((void*)&block), sizeof (int));
+          rc = session_set_control (ses->dks_session, SC_TIMEOUT, (char *)(&to), sizeof (timeout_t));
+        }
       tcpses_to_sslses (ses->dks_session, (void *) (new_ssl));
     }
   return 1;
@@ -5923,7 +5978,7 @@ dk_alloc_reserve_malloc (size_t size, int gpf_if_not)
 
 #ifndef NO_THREAD
 void
-ssl_server_listen ()
+ssl_server_listen (void)
 {
 #ifdef _SSL
   dk_session_t *listening;

@@ -4,7 +4,7 @@
  -  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  -  project.
  -  
- -  Copyright (C) 1998-2021 OpenLink Software
+ -  Copyright (C) 1998-2025 OpenLink Software
  -  
  -  This project is free software; you can redistribute it and/or modify it
  -  under the terms of the GNU General Public License as published by the
@@ -1800,7 +1800,7 @@ impractical in all cases.
                   	
                   	<listitem id="ini_I18N_XAnyNormalization">
                       <formalpara>
-                        <title>WideFileNames = 1/2/3/0</title>
+                        <title>XAnyNormalization = 1/2/3/0</title>
                         <para>0: default value. It means not to normalize anything, so for ex. 
                         	"José" and "Jose" are two distinct words.</para>
                         <para>1: Any pair of base char and combinig char (NSM, non-spacing

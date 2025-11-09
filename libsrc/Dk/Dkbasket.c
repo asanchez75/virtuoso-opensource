@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -411,13 +411,14 @@ rbuf_destroy (rbuf_t * rb)
 }
 
 
+#if 0
 rbuf_t test_rbuf;
 
 void
-rbuf_test ()
+rbuf_test (void)
 {
   rbuf_t rb;
-  ptrlong inx, ctr;
+  int inx, ctr; /* inx is not ptrlong despite use with rbuf_get() etc., because rbuf_delete() want to deal with int * */
   int xx = 0;
   memset (&rb, 0, sizeof (rb));
   for (inx = 0; inx < 1000000; inx++)
@@ -446,7 +447,7 @@ rbuf_test ()
     }
   rbuf_delete_all (&rb);
   for (inx = 1; inx < 100000; inx++)
-    rbuf_add (&rb, (void*)inx);
+    rbuf_add (&rb, (void*)(ptrlong) inx);
   rbuf_rewrite (&rb);
   DO_RBUF (ptrlong, x, rbe, rbe_inx, &rb)
     {
@@ -458,6 +459,7 @@ rbuf_test ()
   rbuf_rewrite_done (&rb);
   if (rb.rb_count != 99000) GPF_T1 ("bad rewrite");
 }
+#endif
 
 #ifdef MALLOC_DEBUG
 dk_mutex_t *spare_rbufs_mtx = NULL;
@@ -503,7 +505,7 @@ rbuf_free_cb (rbuf_t * rb)
 }
 
 rbuf_t *
-rbuf_allocate ()
+rbuf_allocate (void)
 {
 #ifdef MALLOC_DEBUG
   rbuf_t *res;

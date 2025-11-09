@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -186,7 +186,8 @@ public class VirtuosoStatement implements Statement
        arrLong[5] = Long.valueOf((connection.getAutoCommit()) ? 1 : 0);
        arrLong[6] = Long.valueOf (rpc_timeout);
        // Set the cursor type
-       switch(type)
+       int _type = sparql_executed ? VirtuosoResultSet.TYPE_FORWARD_ONLY : type;
+       switch(_type)
 	 {
 	   case VirtuosoResultSet.TYPE_FORWARD_ONLY:
 	       arrLong[7] = Long.valueOf(VirtuosoTypes.SQL_CURSOR_FORWARD_ONLY);
@@ -252,7 +253,9 @@ public class VirtuosoStatement implements Statement
 		   args[5] = getStmtOpts();
 		   future = connection.getFuture(VirtuosoFuture.exec,args, this.rpc_timeout);
 		   result_opened = true;
-		   return new VirtuosoResultSet(this,metaData,false);
+		   VirtuosoResultSet rs = new VirtuosoResultSet(this,metaData,false);
+		   rs.getMoreResults(false);
+		   return rs;
 	       }
 	       catch(IOException e)
 	       {
@@ -270,9 +273,15 @@ public class VirtuosoStatement implements Statement
    /**
     * Method runs when the garbage collector want to erase the object
     */
-   public void finalize() throws Throwable
+   @Override
+   protected void finalize() throws Throwable
    {
-      close();
+       try {
+           if (connection.isClosed())
+               return;
+           close();
+       } catch (Exception e) {
+       }
    }
 
    // --------------------------- JDBC 1.0 ------------------------------

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -73,7 +73,6 @@ lin_int_t li_dc_sort_cost = {3, sm_x, sm_y};
 float hm_x[] = {1, 10000, 1000000, 5000000, 30000000, 100000000, 200000000};
 float hm_y[] = { 0.042, 0.045, 0.09, 0.15, 0.24, 0.34, 0.4};
 lin_int_t li_hash_mem_cost = {sizeof (hm_x) /sizeof  (float), hm_x, hm_y};
-
 
 
 float
@@ -442,6 +441,8 @@ dfe_n_in_order (df_elt_t * dfe, df_elt_t * prev_tb, df_elt_t ** prev_ret, float 
       return 0;
     }
   *cl_colocated = dfe_cl_colocated (prev_tb, dfe);
+  if (!prev_tb->_.table.key)
+    return 0;
   c1 = dfe_lead_const (prev_tb);
   c2 = dfe_lead_const (dfe);
   n1 = prev_tb->_.table.key->key_n_significant;
@@ -1438,7 +1439,7 @@ sqlo_p_stat_query (dbe_table_t * tb, caddr_t p)
   client_connection_t * cli = sqlc_client ();
   lock_trx_t * lt = cli->cli_trx;
   user_t * usr = cli->cli_user;
-  int at_start = cli->cli_anytime_started;
+  time_msec_t at_start = cli->cli_anytime_started;
   int rpc_timeout = cli->cli_rpc_timeout;
   local_cursor_t * lc = NULL;
   caddr_t err = NULL;
@@ -1566,6 +1567,8 @@ sqlo_geo_count (df_elt_t * tb_dfe, df_elt_t * pred)
   int prec_literal = 0;
   double prec = 0;
   geo_t * geo = NULL;
+  if (BOX_ELEMENTS_0(args) < 1)
+    return 0;
   if (BOX_ELEMENTS (args) > 2)
     prec = sqlo_double_literal (args[2], &prec_literal);
   else
@@ -1611,7 +1614,7 @@ id_hash_t * text_counts;
 
 
 void
-sqlo_tc_init ()
+sqlo_tc_init (void)
 {
   text_count_mtx = mutex_allocate ();
   text_counts = id_hash_allocate (1001, sizeof (caddr_t), sizeof (tb_sample_t), strhash, strhashcmp);
@@ -1642,7 +1645,7 @@ sqlo_eval_text_count (dbe_table_t * tb, caddr_t str, caddr_t ext_fti)
   client_connection_t * cli = sqlc_client ();
   lock_trx_t * lt = cli->cli_trx;
   user_t * usr = cli->cli_user;
-  int at_start = cli->cli_anytime_started;
+  time_msec_t at_start = cli->cli_anytime_started;
   int rpc_timeout = cli->cli_rpc_timeout;
   query_t * proc;
   static query_t * call, *call2;
@@ -1755,7 +1758,7 @@ sqlo_text_count (dbe_table_t * tb, caddr_t str, caddr_t ext_fti)
   char tn[1000];
   char * tns = &tn[0];
   tb_sample_t * place;
-  if (2 == cl_run_local_only)
+  if (2 == cl_run_local_only || wi_inst.wi_is_checkpoint_pending)
     return -1;
   snprintf (tn, sizeof (tn), "%s:%s", tb->tb_name, str);
   mutex_enter (text_count_mtx);
@@ -1847,10 +1850,11 @@ sqlo_text_estimate (df_elt_t * tb_dfe, df_elt_t ** text_pred, float * text_sel_r
 
 
 void
-sqlo_timeout_text_count ()
+sqlo_timeout_text_count (void)
 {
-  int now = approx_msec_real_time (), inx;
-  static int last_time;
+  time_msec_t now = approx_msec_real_time ();
+  int inx;
+  static time_msec_t last_time;
   if (last_time && now - last_time < 60000)
     return;
   last_time = now;
@@ -2577,16 +2581,16 @@ sqlo_inx_sample_1 (df_elt_t * tb_dfe, dbe_key_t * key, df_elt_t ** lowers, df_el
     }
   if (sop)
     itc->itc_st.cols = sop->sop_cols;
-    {
-    res = itc_sample (itc);
-      row_sel = itc_row_selectivity (itc, res);
-      if (sop && (dk_hash_t*)-1 == itc->itc_st.cols)
-	{
-	  /* the itc sample has set the p stat, so no p stat or cxol samples here */
-	  hash_table_free (sop->sop_cols);
-	  sop->sop_cols = NULL;
-	}
-    }
+  {
+  res = itc_sample (itc);
+    row_sel = itc_row_selectivity (itc, res);
+    if (sop && (dk_hash_t*)-1 == itc->itc_st.cols)
+      {
+	/* the itc sample has set the p stat, so no p stat or cxol samples here */
+	hash_table_free (sop->sop_cols);
+	sop->sop_cols = NULL;
+      }
+  }
   if (sop)
     sop->sop_n_sample_rows += itc->itc_st.n_sample_rows;
   itc->itc_st.cols = NULL;
@@ -3394,7 +3398,7 @@ rq_sample (df_elt_t * dfe, rq_cols_t * rq, index_choice_t * ic)
 	  lower[fill] = rqp->rqp_lower;
 	  upper[fill] = rqp->rqp_upper;
 	  if (-2 == n_in_items)
-	    n_in_items = THR_ATTR (THREAD_CURRENT_THREAD, TA_N_IN_ITEMS);
+	    n_in_items = (ptrlong) THR_ATTR (THREAD_CURRENT_THREAD, TA_N_IN_ITEMS);
 	  if (-1 == n_in_items && 1 == rqp->rqp_lower->_.bin.is_in_list && !non_index_in)
 	    non_index_in = rqp->rqp_lower;
 	  fill++;
@@ -3467,7 +3471,7 @@ rq_sample_subp (df_elt_t * dfe, rq_cols_t * rq, index_choice_t * ic)
   ri_iterator_t * rit;
   int found;
   rdf_sub_t * sub_iri;
-  variable = &rq->rq_p.rqp_lower->_.bin.right->dfe_tree;
+  variable = (caddr_t *) &rq->rq_p.rqp_lower->_.bin.right->dfe_tree;
   save = *variable;
   sub = ric_iri_to_sub (ric, save, RI_SUBPROPERTY, 0);
   if (!sub || (!sub->rs_sub && !sub->rs_equiv))
@@ -3581,9 +3585,9 @@ dfe_init_p_stat (df_elt_t * dfe, df_elt_t * lower)
   rq.rq_p.rqp_lower = lower;
   ic.ic_set_sample_key = 1;
   ic.ic_key = tb_px_key (rq.rq_table, rq.rq_s_col);
-  dfe_p_card (dfe, &rq, &p_stat, &ic, SO_S);
+  dfe_p_card (dfe, &rq, p_stat, &ic, SO_S);
   ic.ic_key = tb_px_key (rq.rq_table, rq.rq_o_col);
-  dfe_p_card (dfe, &rq, &p_stat, &ic, SO_O);
+  dfe_p_card (dfe, &rq, p_stat, &ic, SO_O);
   return 1;
 }
 
@@ -3776,7 +3780,7 @@ sqlo_use_p_stat (df_elt_t * dfe, df_elt_t ** lowers, int inx_const_fill, int64 e
   if (!enable_p_stat || !inx_const_fill)
     return 0;
   if (0 != strcmp (((dbe_column_t*)key->key_parts->data)->col_name, "P")
-      || !strstr (key->key_table->tb_name, "RDF_QUAD"))
+      || !tb_is_rdf_quad (key->key_table))
     return 0;
   col2 = (dbe_column_t*)key->key_parts->next->data;
   so_dfe = sqlo_key_part_best (col2, dfe->_.table.col_preds, 0);
@@ -3885,7 +3889,7 @@ arity_scale (float ar)
 }
 
 int
-col_dfe_list_size (dk_set_t * cols)
+col_dfe_list_size (dk_set_t cols)
 {
   int res = 0;
   DO_SET (df_elt_t *, dfe, &cols)
@@ -4138,7 +4142,7 @@ dfe_table_cost_ic_1 (df_elt_t * dfe, index_choice_t * ic, int inx_only)
 	  if (DFE_TEXT_PRED == pred->dfe_type)
 	    continue;
 	  left_col = in_list ? in_list[0]->_.col.col :
-	    (pred->_.bin.left->dfe_type == DFE_COLUMN ? pred->_.bin.left->_.col.col : NULL);
+	    (!DFE_SHORTCUT(pred->_.bin.left) && pred->_.bin.left->dfe_type == DFE_COLUMN ? pred->_.bin.left->_.col.col : NULL);
 	  if (DFE_BOP_PRED == pred->dfe_type && part == left_col && pred != lower && pred != upper)
 	    {
 	      sqlo_pred_unit (pred, NULL, dfe, &p_cost, &p_arity);
@@ -4207,7 +4211,7 @@ dfe_table_cost_ic_1 (df_elt_t * dfe, index_choice_t * ic, int inx_only)
       ic->ic_leading_constants = dfe->_.table.is_arity_sure = inx_const_fill * 2 + (0 != p_stat);
     no_sample: ;
     }
-#ifndef NDEBUG
+#if 0
   if (-INFINITY == inx_arity) bing ();
 #endif
   if (enable_vec_cost)
@@ -4324,7 +4328,7 @@ dfe_table_cost_ic_1 (df_elt_t * dfe, index_choice_t * ic, int inx_only)
   /* the right of left outer has never cardinality < 1.  But the join tests etc are costed at cardinality that can be < 1. So adjust this as last.*/
   dfe->dfe_arity = *a1 = total_arity;
   dfe->dfe_unit = *u1 = total_cost;
-#ifndef NDEBUG
+#if 0
   if (!isfinite (dfe->dfe_unit) || !isfinite (dfe->dfe_arity)) bing ();
 #endif
   if (IC_AS_IS != ic->ic_op && ic->ic_ric && empty_ric != ic->ic_ric)
@@ -4684,6 +4688,8 @@ dfe_unit_cost (df_elt_t * dfe, float input_arity, float * u1, float * a1, float 
       if (dfe->dfe_type == DFE_DT
 	  && dfe->_.sub.ot->ot_is_outer)
 	*a1 = MAX (1, *a1); /* right siode of left oj has min cardinality 1 */
+      if (dfe->_.sub.trans && TRANS_LR == dfe->_.sub.trans->tl_direction) /* in unkn est. potentially increase */
+        *u1 *= MAX (dfe->_.sub.in_arity, 1.0);
 
       break;
     case DFE_QEXP:
@@ -4743,7 +4749,7 @@ dfe_unit_cost (df_elt_t * dfe, float input_arity, float * u1, float * a1, float 
       *a1 = 1;
       break;
     }
-#ifndef NDEBUG
+#if 0
   if (!isfinite (*a1) || !isfinite (*u1)) bing ();
 #endif
   dfe->dfe_unit = *u1;
@@ -4762,7 +4768,7 @@ dfe_list_cost (df_elt_t * dfe, float * unit_ret, float * arity_ret, float * over
       DO_BOX (df_elt_t *, elt, inx, dfe_arr)
 	{
 	  dfe_unit_cost (elt, 1, &u1, &a1, overhead_ret);
-#ifndef NDEBUG
+#if 0
 	  if (!isfinite (a1 * arity) || !isfinite (u1 + cum)) bing ();
 #endif
 	  if ((DFE_TABLE == elt->dfe_type || DFE_DT == elt->dfe_type)

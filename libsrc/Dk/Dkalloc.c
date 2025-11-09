@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -66,9 +66,6 @@ int64 dk_n_max_allocs;
 #ifdef dk_free
 #undef dk_free
 #endif
-
-extern void dk_box_initialize (void);
-extern void dk_box_finalize (void);
 
 #define NO_MALLOC_CACHE
 #undef CACHE_MALLOC
@@ -587,7 +584,7 @@ uint32 thread_malloc_hits;
 uint32 thread_malloc_misses;
 
 void
-dk_cpu_init ()
+dk_cpu_init (void)
 {
 }
 
@@ -1060,7 +1057,7 @@ dk_alloc_cache_status (void * cache)
 }
 
 size_t
-dk_alloc_global_cache_total ()
+dk_alloc_global_cache_total (void)
 {
   size_t bs = 0;
 #ifdef CACHE_MALLOC

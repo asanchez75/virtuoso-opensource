@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1234,7 +1234,6 @@ DBG_NAME(numeric_allocate) (DBG_PARAMS_0)
 #endif
 }
 
-
 numeric_t
 DBG_NAME(t_numeric_allocate) (DBG_PARAMS_0)
 {
@@ -1254,6 +1253,13 @@ DBG_NAME(t_numeric_allocate) (DBG_PARAMS_0)
 #endif
 }
 
+#ifdef MALLOC_DEBUG
+#undef numeric_allocate
+numeric_t
+numeric_allocate () { return dbg_numeric_allocate (__FILE__, __LINE__); }
+#undef t_numeric_allocate
+numeric_t t_numeric_allocate () { return dbg_t_numeric_allocate (__FILE__, __LINE__); }
+#endif
 
 numeric_t
 mp_numeric_allocate (mem_pool_t * mp)
@@ -1408,6 +1414,10 @@ numeric_copy (numeric_t result, numeric_t n)
     {
       int value_bytes = n->n_len + n->n_scale;
       *(int64*)result = *(int64*)n;
+#ifndef NDEBUG
+      if (value_bytes > NUMERIC_STACK_BYTES) /* if int or other type of data is in place of numeric_t *, then may happen to have unusual len */
+        return NUMERIC_STS_MARSHALLING;
+#endif
       if (value_bytes > 4)
 	{
 	  ((int64*)result)[1] = ((int64*)n)[1];
@@ -1496,6 +1506,7 @@ numeric_from_string (numeric_t n, const char *s)
   int scale;
   int first;
   int rc;
+  int has_digit;
 
   /* strip leading whitespace */
   while (isspace (*cp)) cp++;
@@ -1544,12 +1555,13 @@ numeric_from_string (numeric_t n, const char *s)
   exp = 0;
   scale = 0;
   first = 1;
+  has_digit = 0;
   error = NUMERIC_STS_SUCCESS;
   dp = n->n_value;
 
   for (; *cp; cp++)
     {
-      if (toupper (*cp) == 'E')
+      if (has_digit && toupper (*cp) == 'E') /* can't have a float eNN should begin with number */
 	{
 	  exp = atoi (cp + 1);
 	  break;
@@ -1567,6 +1579,7 @@ numeric_from_string (numeric_t n, const char *s)
 	{
 	  if (first)
 	    {
+              has_digit = 1;
 	      if (*cp != '0')
 		first = 0;
 	      else if (!dot)
@@ -1594,7 +1607,8 @@ numeric_from_string (numeric_t n, const char *s)
 	}
     }
 
-  rc = _numeric_normalize (n);
+  if (NUMERIC_STS_SUCCESS == error)
+    rc = _numeric_normalize (n);
 
   if (neg && !num_is_zero (n))
     n->n_neg = 1;

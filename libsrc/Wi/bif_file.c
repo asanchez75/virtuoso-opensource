@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -41,14 +41,6 @@
 #include "sqlparext.h"
 #include "security.h"
 #include "sqlbif.h"
-
-#ifndef P_tmpdir
-# ifdef _P_tmpdir               /* native Windows */
-#  define P_tmpdir _P_tmpdir
-# else
-#  define P_tmpdir "/tmp"
-# endif
-#endif
 
 #ifndef P_tmpdir
 # ifdef _P_tmpdir /* native Windows */
@@ -84,23 +76,6 @@
 
 #define FS_MAX_STRING	(10L * 1024L * 1024L)	/* allow files up to 10 MB */
 
-#ifdef WIN32
-#include <windows.h>
-#define HAVE_DIRECT_H
-#endif
-
-#ifdef HAVE_DIRECT_H
-#include <direct.h>
-#include <io.h>
-#define mkdir(p,m)	_mkdir (p)
-#define FS_DIR_MODE	0777
-#define PATH_MAX	 MAX_PATH
-#define get_cwd(p,l)	_get_cwd (p,l)
-#else
-#include <dirent.h>
-#define FS_DIR_MODE	 (S_IRWXU | S_IRWXG | S_IRWXO)
-#endif
-
 #include "datesupp.h"
 #include "langfunc.h"
 
@@ -124,22 +99,6 @@ static char www_abs_path[PATH_MAX + 1];	/* the max possible OS path */
 int spotlight_integration;
 
 char *rel_to_abs_path (char *p, const char *path, long len);
-
-#ifdef WIN32
-#define DIR_SEP '\\'
-#define SINGLE_DOT "\\."
-#define DOUBLE_DOT "\\.."
-#define IS_DRIVE(p) (*(p+1) == ':')
-#define BEGIN_WITH(a,b) (0 == strnicmp (a,b,strlen(b)))
-#define STR_EQUAL(a,b) (0 == stricmp (a,b))
-#else
-#define DIR_SEP '/'
-#define SINGLE_DOT "/."
-#define DOUBLE_DOT "/.."
-#define IS_DRIVE(p) 0
-#define BEGIN_WITH(a,b) (0 == strncmp (a,b,strlen(b)))
-#define STR_EQUAL(a,b) (0 == strcmp (a,b))
-#endif
 
 char *
 virt_strerror (int eno)
@@ -713,7 +672,7 @@ bif_server_root (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 
 
 void
-set_ses_tmp_dir ()
+set_ses_tmp_dir (void)
 {
   static char abs_path[PATH_MAX + 1], *p_abs_path = abs_path;
   abs_path[0] = 0;
@@ -2489,6 +2448,31 @@ bif_uuid (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return box_dv_short_string (p);
 }
 
+extern caddr_t iri_to_id (caddr_t *qst, caddr_t raw_name, int mode, caddr_t *err_ret);
+
+static caddr_t
+bif_rdf_uuid_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+    caddr_t res, name;
+    caddr_t err = NULL;
+    char p[100];
+
+    uuid_str (p, sizeof (p));
+    name = box_sprintf (128, "urn:uuid:%s", p);
+    box_flags (name) = BF_IRI;
+
+    res = iri_to_id (qst, name, /*IRI_TO_ID_WITH_CREATE*/ 1, &err);
+
+    if (NULL != err)
+      sqlr_resignal (err);
+
+    if (NULL == res)
+      return NEW_DB_NULL;
+
+  return res;
+}
+
+
 static const char __tohex[] = "0123456789abcdef";
 caddr_t
 md5 (caddr_t str)
@@ -2529,46 +2513,39 @@ mdigest5 (caddr_t str)
   return res;
 }
 
-caddr_t
-md5ctx_to_string (MD5_CTX * pctx)
+static caddr_t
+md5ctx_to_string (caddr_t * qst, MD5_CTX * pctx)
 {
   int inx;
   caddr_t res;
-  res = dk_alloc_box (sizeof (MD5_CTX) * 2 + 1, DV_SHORT_STRING);
-  for (inx = 0; inx < sizeof (MD5_CTX); inx++)
-    {
-      unsigned c = (unsigned) ((char *) pctx)[inx];
-      res[inx * 2] = __tohex[0xf & (c >> 4)];
-      res[inx * 2 + 1] = __tohex[c & 0xf];
-    }
-  res[sizeof (MD5_CTX) * 2] = '\0';
+  client_connection_t * cli = ((query_instance_t *)qst)->qi_client;
+  caddr_t tmp[sizeof (MD5_CTX) + BOX_AUTO_OVERHEAD], box;
+  BOX_AUTO_TYPED(caddr_t, box, tmp, sizeof (MD5_CTX), DV_BIN);
+  memcpy (box, pctx, sizeof (MD5_CTX));
+  res = box_sprintf (64, "md5-ctx-%lx", box);
+  connection_set (cli, res, box);
   return res;
 }
 
 
-int
-string_to_md5ctx (MD5_CTX * pctx, caddr_t str)
+static int
+string_to_md5ctx (caddr_t * qst, MD5_CTX * pctx, caddr_t str)
 {
   int inx;
-  if (box_length (str) < sizeof (MD5_CTX) * 2)
-    sqlr_new_error ("42000", "SR435",
-	"Attempt to deserialize too short md5 context.");
-
-  for (inx = 0; inx < sizeof (MD5_CTX); inx++)
+  client_connection_t * cli = ((query_instance_t *)qst)->qi_client;
+  caddr_t key, ctx;
+  int ok = 0;
+  if ((ok = id_hash_get_and_remove (cli->cli_globals, (caddr_t) &str, (caddr_t)(&key), (caddr_t)(&ctx))))
     {
-      int l1 = -1, l2 = -1;
-      char *p;
-      p = strchr (__tohex, str[inx * 2]);
-      if (NULL != p)
-	l1 = (int) (p - __tohex);
-      p = strchr (__tohex, str[inx * 2 + 1]);
-      if (NULL != p)
-	l2 = (int) (p - __tohex);
-      if (l1 < 0 || l2 < 0)
-	sqlr_new_error ("42000", "SR436",
-	    "Attempt to deserialize incorrect md5 context.");
-      ((char *) pctx)[inx] = (l1 << 4) + l2;
+      if (box_length(ctx) == sizeof(MD5_CTX))
+        memcpy(pctx, ctx, sizeof(MD5_CTX));
+      else
+        ok = 0;
+      dk_free_box(key);
+      dk_free_box(ctx);
     }
+  if (!ok)
+    sqlr_new_error ("42000", "SR435", "Attempt to access non-existing or used md5 context.");
   return 0;
 }
 
@@ -2578,7 +2555,7 @@ bif_md5_init (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   MD5_CTX ctx;
   memset (&ctx, 0, sizeof (MD5_CTX));
   MD5_Init (&ctx);
-  return md5ctx_to_string (&ctx);
+  return md5ctx_to_string (qst, &ctx);
 }
 
 void
@@ -2600,7 +2577,7 @@ bif_md5_update (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   else
     str = (caddr_t)bif_strses_arg (qst, args, 1, "md5_update");
 
-  string_to_md5ctx (&ctx, sctx);
+  string_to_md5ctx (qst, &ctx, sctx);
   if (DV_STRING == dtp || DV_RDF == dtp)
     MD5_Update (&ctx, (unsigned char *) str, box_length (str) - 1);
   else
@@ -2610,7 +2587,7 @@ bif_md5_update (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
       strses_file_map (ses, md5_update_map, (caddr_t) & ctx);
       MD5_Update (&ctx, (unsigned char *) ses->dks_out_buffer, ses->dks_out_fill);
     }
-  return md5ctx_to_string (&ctx);
+  return md5ctx_to_string (qst, &ctx);
 }
 
 static caddr_t
@@ -2622,7 +2599,7 @@ bif_md5_final (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   unsigned char digest[MD5_SIZE];
   caddr_t sctx = bif_string_arg (qst, args, 0, "md5_final");
   int make_it_hex = 1;
-  string_to_md5ctx (&ctx, sctx);
+  string_to_md5ctx (qst, &ctx, sctx);
   if (BOX_ELEMENTS (args) > 1)
     make_it_hex = (int) bif_long_arg (qst, args, 1, "md5_final");
   if (make_it_hex)
@@ -2819,7 +2796,7 @@ win32_system (char *cmd)
 }
 
 static void
-win32_system_init ()
+win32_system_init (void)
 {
   if (do_os_calls)
     {
@@ -4934,13 +4911,12 @@ gz_stream_free (void * s)
   return gz_s_free ((gz_stream *)s);
 }
 
-int
-do_flush_ses (gzFile file, int flush, dk_session_t *ses_out)
+static int
+do_flush_ses (gz_stream *s, int flush, dk_session_t *ses_out)
 {
   uInt len;
   int done = 0;
   char temp[20];
-  gz_stream *s = (gz_stream *) file;
 
   s->stream.avail_in = 0;	/* should be zero already anyway */
 
@@ -5829,7 +5805,7 @@ get_mode_string (caddr_t user_str, int set)
 
 
 void
-set_ini_trace_option ()
+set_ini_trace_option (void)
 {
   char *tmp, *tok_s = NULL, *tok;
   tok_s = NULL;
@@ -7047,13 +7023,16 @@ err_end:
 /* tiny CSV parser */
 #define CSV_DELIM 		','
 #define CSV_QUOTE		'\"'
-#define CSV_ESCAPE              '%'
+#define CSV_ESCAPE		'\0'	/*!< The default is no escape, according to RFC */
+#define CSV_NEWLINE1		'\r'
+#define CSV_NEWLINE2		'\n'
 
 #define CSV_ROW_NOT_STARTED 	0
 #define CSV_FIELD_NOT_STARTED	1
 #define CSV_FIELD_STARTED	2
 #define CSV_FIELD_MAY_END	3
-#define CSV_ESC_SEQUENCE_STARTED 4
+#define CSV_HEX_ESC_SEQUENCE_STARTED 4
+#define CSV_PLAIN_ESC_SEQUENCE_STARTED 5
 
 #define CSV_FIELD(set,ses) \
     do \
@@ -7107,7 +7086,7 @@ csv_field (dk_session_t * ses, int mode)
   else if (NULL != (regex = regexp_match_01_const ("^[\\+\\-]?[0-9]+\\.[0-9]*[Ee][\\+\\-]?[0-9]+$", str, 0, &r3)))
     {
       double d = 0;
-      sscanf (str, "%lg", &d);
+      sscanf (str, "%lf", &d);
       ret = box_double (d);
       dk_free_box (str);
       dk_free_box (regex);
@@ -7120,15 +7099,33 @@ csv_field (dk_session_t * ses, int mode)
     }
   else
     {
-string_val:
+      /* we try here if this is date/time string */
+      caddr_t err_str = NULL;
+      dtp_t dt[DT_LENGTH];
+      odbc_string_to_any_dt (str, (char *) dt, &err_str);
+      if (err_str)
+	{
+	  /* not a datetime */
+	  dk_free_tree (err_str);
+	}
+      else if (box_length (str) > 10)
+	{
+	  /* look-like a datetime */
+	  ret = dk_alloc_box_zero (DT_LENGTH, DV_DATETIME);
+	  memcpy (ret, dt, DT_LENGTH);
+	  dk_free_box (str);
+	  goto ret_exit;
+	}
+    string_val:
       if (0 != str[0])
-      ret = str;
+	ret = str;
       else
 	{
 	  dk_free_box (str);
 	  ret = NEW_DB_NULL;
 	}
     }
+ret_exit:
   return ret;
 }
 
@@ -7136,11 +7133,11 @@ static unichar
 get_uchar_from_session (dk_session_t * in, encoding_handler_t * eh)
 {
   unichar c = UNICHAR_EOD;
-  char buf [MAX_ENCODED_CHAR];
+  char buf[MAX_ENCODED_CHAR];
   int readed = 0;
   do
     {
-      const char * ptr = &(buf[0]);
+      const char *ptr = &(buf[0]);
       if ((readed + eh->eh_minsize) > MAX_ENCODED_CHAR)
 	return UNICHAR_BAD_ENCODING;
       readed += session_buffered_read (in, buf + readed, eh->eh_minsize);
@@ -7150,50 +7147,25 @@ get_uchar_from_session (dk_session_t * in, encoding_handler_t * eh)
   return c;
 }
 
-int csv_field_escapes = 1;
-
 caddr_t
-bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+get_csv_row_impl (caddr_t * qst, dk_session_t * in, encoding_handler_t *eh, caddr_t *err_ret, csv_parser_config_t *cpc)
 {
-  dk_session_t *in = bif_strses_arg (qst, args, 0, "get_csv_row");
   dk_set_t row = NULL;
   dk_session_t *fl;
   caddr_t res = NULL;
-  int quoted = 0, error = CSV_OK, mode = CSV_STRICT, signal_error = 0;
-  unsigned char state = CSV_ROW_NOT_STARTED, delim = CSV_DELIM, quote = CSV_QUOTE, esc = CSV_ESCAPE;
+  char delim = cpc->cpc_field_delim;
+  char n1 = cpc->cpc_newline1;
+  char n2 = cpc->cpc_newline2;
+  char quote = cpc->cpc_quote;
+  char plain_esc = cpc->cpc_plain_escape;
+  char hex_esc = cpc->cpc_hex_escape;
+  int trim_whitespaces = cpc->cpc_trim_whitespaces;
+  int quoted = 0, error = CSV_OK, mode = cpc->cpc_mode, signal_error = 0;
+  unsigned char state = CSV_ROW_NOT_STARTED;
   unichar c;
   unichar escaped[2];
   int escaped_idx = 0;
   char utf8char[MAX_UTF8_CHAR];
-  encoding_handler_t *eh = &eh__ISO8859_1;
-  if (BOX_ELEMENTS (args) > 1)
-    {
-      caddr_t ch = bif_string_or_null_arg (qst, args, 1, "get_csv_row");
-      delim = ch && ch[0] ? ch[0] : CSV_DELIM;
-    }
-  if (BOX_ELEMENTS (args) > 2)
-    {
-      caddr_t ch = bif_string_or_null_arg (qst, args, 2, "get_csv_row");
-      quote = ch && ch[0] ? ch[0] : CSV_QUOTE;
-    }
-  if (BOX_ELEMENTS (args) > 3)
-    {
-      caddr_t enc = bif_string_or_null_arg (qst, args, 3, "get_csv_row");
-      if (enc && enc[0])
-	eh = eh_get_handler (enc);
-      if (NULL == eh)
-	sqlr_new_error ("42000", "CSV01", "Invalid encoding name '%s' is specified", enc);
-    }
-  if (BOX_ELEMENTS (args) > 4)
-    {
-      int is_null_f = 0;
-      long f = bif_long_or_null_arg (qst, args, 4, "get_csv_row", &is_null_f);
-      signal_error = f & 0x04;
-      f &= 0x03;
-      if (!is_null_f && f != CSV_LAX && f != CSV_STRICT && f != CSV_LAX_STR)
-	sqlr_new_error ("22023", "CSV03", "CSV parsing mode flag must be strict:1 or relaxing:2");
-      mode = f;
-    }
   escaped[0] = 0;
   escaped[1] = 0;
   fl = strses_allocate ();
@@ -7213,9 +7185,9 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	  case CSV_ROW_NOT_STARTED:
 	  case CSV_FIELD_NOT_STARTED:
 	    {
-	      if (delim != c && (c == 0x20 || c == 0x09 || c == 0xfeff))	/* space or BOM at the start */
+	      if (delim != c && ((trim_whitespaces && (c == ' ' || c == '\t')) || c == 0xfeff))	/* space or BOM at the start */
 		continue;
-	      else if (c == 0x0d || c == 0x0a)
+	      else if ((c == n1) || (('\0' != n2) && (c == n2)))
 		{
 		  if (state == CSV_ROW_NOT_STARTED)	/* skip empty lines */
 		    continue;
@@ -7247,10 +7219,7 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	      if (c == quote)
 		{
 		  if (quoted)
-		    {
-		      CSV_CHAR (c, fl);
-		      state = CSV_FIELD_MAY_END;
-		    }
+		    state = CSV_FIELD_MAY_END;
 		  else
 		    {
 		      if (CSV_STRICT == mode)
@@ -7278,66 +7247,74 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 		      goto end;	/* row end */
 		    }
 		}
-		      else if (c == esc && csv_field_escapes)
-		        {
-                          state = CSV_ESC_SEQUENCE_STARTED;
-		          escaped_idx = 0;
-		        }
+	      else if (c == hex_esc)
+		{
+		  state = CSV_HEX_ESC_SEQUENCE_STARTED;
+		  escaped_idx = 0;
+		}
+	      else if (c == plain_esc)
+		{
+		  state = CSV_PLAIN_ESC_SEQUENCE_STARTED;
+		  escaped_idx = 0;
+		}
 	      else
 		{
 		  CSV_CHAR (c, fl);
 		}
 	    }
 	    break;
-	      case CSV_ESC_SEQUENCE_STARTED:
-	          {                             /*30                 9 A B C D E F40 41 42 43 44 45 46*/
-	            static char digit_weights[] = {0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,0,10,11,12,13,14,15};
-	            if (c == esc)
-	              {
-                        CSV_CHAR (c, fl);
-                        escaped_idx = escaped[0] = escaped[1] = 0;
-                        state = CSV_FIELD_STARTED;
-	              }
-	            else if (c >= 0x30 && c <= 0x46)
-                      {
-                        escaped[escaped_idx++] = c;
-                        if (escaped_idx >= 2)
-                          {
-                            unichar ch = 16 * digit_weights[ escaped[0] - 0x30] + digit_weights[ escaped[1] - 0x30 ];
-                            CSV_CHAR (ch, fl);
-                            escaped_idx = escaped[0] = escaped[1] = 0;
-                            state = CSV_FIELD_STARTED;
-                          }
-                      }
-	            else
-                      {
-                        /* wrong digit in esc sequence */
-                        CSV_CHAR (esc, fl);
-                        CSV_CHAR (escaped[0], fl);
-                        CSV_CHAR (escaped[0], fl);
-                        escaped_idx = escaped[0] = escaped[1] = 0;
-                        state = CSV_FIELD_STARTED;
-                      }
-	          }
-	          break;
+	  case CSV_HEX_ESC_SEQUENCE_STARTED:
+	    {			/*30                 9 A B C D E F40 41 42 43 44 45 46 */
+	      static char digit_weights[] =
+		  { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, '_', '_', '_', '_', '_', '_', '_', 10, 11, 12, 13, 14, 15 };
+	      int cweight = 0;
+	      if ((c >= 0x30 && c <= 0x46) && ('_' != (cweight = digit_weights[c - 0x30])))
+		{
+		  escaped[escaped_idx++] = c;
+		  if (escaped_idx >= 2)
+		    {
+		      unichar ch = 16 * digit_weights[escaped[0] - 0x30] + digit_weights[escaped[1] - 0x30];
+		      CSV_CHAR (ch, fl);
+		      escaped_idx = escaped[0] = escaped[1] = 0;
+		      state = CSV_FIELD_STARTED;
+		    }
+		}
+	      else if ((hex_esc == plain_esc) && (0 == escaped_idx))
+		{
+		  CSV_CHAR (c, fl);
+		  state = CSV_FIELD_STARTED;
+		}
+	      else
+		{
+		  /* wrong digit in esc sequence */
+		  CSV_CHAR (hex_esc, fl);
+		  CSV_CHAR (escaped[0], fl);
+		  CSV_CHAR (escaped[1], fl);
+		  escaped_idx = escaped[0] = escaped[1] = 0;
+		  state = CSV_FIELD_STARTED;
+		}
+	    }
+	    break;
+	  case CSV_PLAIN_ESC_SEQUENCE_STARTED:
+	    CSV_CHAR (c, fl);
+	    state = CSV_FIELD_STARTED;
+	    break;
 	  case CSV_FIELD_MAY_END:
 	    {
-	      if (c == quote)
+	      if (c == quote)	/* double quote */
 		{
-		  /* skip, double quote */
+		  CSV_CHAR (c, fl);
 		  state = CSV_FIELD_STARTED;
 		}
 	      else if (c == delim)
-		{
-		  fl->dks_out_fill--;
-		  CSV_FIELD (row, fl);
-		}
+		CSV_FIELD (row, fl);
 	      else if (c == 0x0d || c == 0x0a)
 		{
-		  fl->dks_out_fill--;
 		  CSV_FIELD (row, fl);
 		  goto end;	/* row end */
 		}
+	      else if (trim_whitespaces && (c == ' ' || c == '\t'))	/* space after last quote, ignore */
+		continue;
 	      else
 		{
 		  /* char after closing quote */
@@ -7346,6 +7323,7 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 		      error = CSV_ERR_ESC;
 		      break;
 		    }
+		  CSV_CHAR (quote, fl);
 		  CSV_CHAR (c, fl);
 		  quoted = 0;
 		}
@@ -7361,6 +7339,11 @@ bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   {
     if (CSV_ROW_NOT_STARTED == state)	/* when no one char can be read */
       error = CSV_ERR_END;
+    else if (CSV_FIELD_MAY_END == state || CSV_FIELD_NOT_STARTED == state) /* not started means readed delimiter */
+      {
+	/* end of file */
+	CSV_FIELD (row, fl);
+      }
   }
   END_READ_FAIL (in);
   if (state == CSV_FIELD_STARTED)	/* case when no cr/lf at the end of file */
@@ -7381,9 +7364,54 @@ end:
       if (signal_error)
 	*err_ret = srv_make_new_error ("37000", "CSV04", "Error parsing CSV row, error code: %d", error);
     }
-  dk_free_box ((caddr_t)fl);
+  dk_free_box ((caddr_t) fl);
   return res;
 }
+
+caddr_t
+bif_get_csv_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  dk_session_t *in = bif_strses_arg (qst, args, 0, "get_csv_row");
+  csv_parser_config_t cpc;
+  memzero (&cpc, sizeof (cpc));
+  cpc.cpc_field_delim = CSV_DELIM;
+  cpc.cpc_quote = CSV_QUOTE;
+  cpc.cpc_plain_escape = cpc.cpc_hex_escape = CSV_ESCAPE;
+  cpc.cpc_mode = CSV_STRICT;
+  cpc.cpc_newline1 = CSV_NEWLINE1;
+  cpc.cpc_newline2 = CSV_NEWLINE2;
+  encoding_handler_t *eh = &eh__ISO8859_1;
+  if (BOX_ELEMENTS (args) > 1)
+    {
+      caddr_t ch = bif_string_or_null_arg (qst, args, 1, "get_csv_row");
+      cpc.cpc_field_delim = ch && ch[0] ? ch[0] : CSV_DELIM;
+    }
+  if (BOX_ELEMENTS (args) > 2)
+    {
+      caddr_t ch = bif_string_or_null_arg (qst, args, 2, "get_csv_row");
+      cpc.cpc_quote = ch && ch[0] ? ch[0] : CSV_QUOTE;
+    }
+  if (BOX_ELEMENTS (args) > 3)
+    {
+      caddr_t enc = bif_string_or_null_arg (qst, args, 3, "get_csv_row");
+      if (enc && enc[0])
+	eh = eh_get_handler (enc);
+      if (NULL == eh)
+	sqlr_new_error ("42000", "CSV01", "Invalid encoding name '%s' is specified", enc);
+    }
+  if (BOX_ELEMENTS (args) > 4)
+    {
+      int is_null_f = 0;
+      long f = bif_long_or_null_arg (qst, args, 4, "get_csv_row", &is_null_f);
+      int signal_error = f & 0x04;
+      f &= 0x03;
+      if (!is_null_f && f != CSV_LAX && f != CSV_STRICT && f != CSV_LAX_STR)
+	sqlr_new_error ("22023", "CSV03", "CSV parsing mode flag must be strict:1 or relaxing:2");
+      cpc.cpc_mode = f | signal_error;
+    }
+  return get_csv_row_impl (qst, in, eh, err_ret, &cpc);
+}
+
 
 caddr_t
 bif_get_plaintext_row (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
@@ -7477,6 +7505,17 @@ res_done: ;
   return res;
 }
 
+
+caddr_t
+bif_fs_space (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t fs = bif_string_arg (qst, args, 0, "fs_space");
+  uint64 size;
+  int flag = (int) bif_long_arg (qst, args, 1, "fs_space");
+  size = mon_get_disk_space (fs, flag, err_ret);
+  return box_num (size);
+}
+
 void
 bif_file_init (void)
 {
@@ -7506,6 +7545,7 @@ bif_file_init (void)
   bif_define_ex ("md5_final", bif_md5_final, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_ex ("__vector_sort", bif_vector_sort, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define_ex ("uuid", bif_uuid, BMD_ALIAS, "rdf_struuid_impl", BMD_RET_TYPE, &bt_varchar, BMD_NO_FOLD, BMD_DONE);
+  bif_define_ex ("rdf_uuid_impl", bif_rdf_uuid_impl, BMD_RET_TYPE, &bt_iri_id, BMD_NO_FOLD, BMD_DONE);
   bif_define ("dime_compose", bif_dime_compose);
   bif_define ("dime_tree", bif_dime_tree);
   bif_define_ex ("file_stat", bif_file_stat, BMD_RET_TYPE, &bt_any, BMD_DONE);
@@ -7556,6 +7596,7 @@ bif_file_init (void)
   bif_define_ex ("get_csv_row", bif_get_csv_row, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define_ex ("get_plaintext_row", bif_get_plaintext_row, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_ex ("getenv", bif_getenv, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("fs_space", bif_fs_space, BMD_RET_TYPE, &bt_integer, BMD_DONE);
 #ifdef HAVE_BIF_GPF
   bif_define ("__gpf", bif_gpf);
 #endif

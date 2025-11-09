@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -122,11 +122,12 @@ typedef void (*bif_type_func_t) (state_slot_t ** args, long *dtp, long *prec,
 
 typedef struct
   {
-    bif_type_func_t	bt_func;
-    long		bt_dtp;
-    long		bt_prec;
-    long		bt_scale;
-    const char *	bt_sql_dml_name;
+    bif_type_func_t     bt_func;
+    long                bt_dtp;
+    long                bt_prec;
+    long                bt_scale;
+    long                bt_non_null;
+    const char *        bt_sql_dml_name;
   } bif_type_t;
 
 VIRTVARCLASS bif_type_t bt_varchar;
@@ -266,8 +267,8 @@ extern int _thread_num_runnable;
 extern int _thread_num_wait;
 extern int _thread_num_dead;
 
-int log_info (char *format, ...);
-int log_debug (char *format, ...);
+int log_info (const char *format, ...);
+int log_debug (const char *format, ...);
 void thread_allow_schedule (void);
 void thread_exit (int n);
 int *thread_errno (void);
@@ -590,7 +591,7 @@ struct dk_session_s
 
     short		dks_n_threads;
     /*! time of last usage (get_msec_real_time) - use for dropping idle HTTP keep alives */
-    uint32		dks_last_used;
+    time_msec_t	dks_last_used;
     /*! burst mode */
     dks_thread_state_t  dks_thread_state;
     /*! web server thread associated to this if ws computation pending. Used to cancel upon client disconnect */
@@ -607,7 +608,7 @@ struct dk_session_s
 
 void session_buffered_write_char (int c, dk_session_t * ses);
 void print_long (long l, dk_session_t * session);
-typedef int    (*ses_write_func) (void * obj, dk_session_t * session);
+typedef int    (*ses_write_func) (const void * obj, dk_session_t * session);
 void PrpcSetWriter (dtp_t dtp, ses_write_func f);
 
 #define SESSION_DK_SESSION(session) \
@@ -624,10 +625,10 @@ void PrpcSetWriter (dtp_t dtp, ses_write_func f);
 #define THR_ATTR(th,a)          thread_getattr(th, (void *)(long) a)
 
 void strses_flush (dk_session_t *ses);
-long strses_length (dk_session_t *ses);
+int64 strses_length (dk_session_t *ses);
 void strses_free (dk_session_t *ses);
 dk_session_t *strses_allocate (void);
-int session_buffered_write (dk_session_t * ses, char *buffer, size_t length);
+int session_buffered_write (dk_session_t * ses, const char *buffer, size_t length);
 void * thread_getattr (thread_t *self, void *key);
 thread_t * thread_current (void);
 void * thread_setattr (thread_t *self, void *key, void *value);

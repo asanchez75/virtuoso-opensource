@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -257,7 +257,7 @@ dbs_extend_ext_cache (dbe_storage_t * dbs)
 }
 
 int32 dbs_check_extent_free_pages = 1;
-
+int64 dbs_max_temp_db_pages = 0;
 
 int
 dbs_file_extend (dbe_storage_t * dbs, extent_t ** new_ext_ret, int is_in_sys_em)
@@ -268,6 +268,8 @@ dbs_file_extend (dbe_storage_t * dbs, extent_t ** new_ext_ret, int is_in_sys_em)
   dp_addr_t ext_first = dbs->dbs_n_pages;
   ASSERT_IN_DBS (dbs);
   if (dbf_no_disk)
+    return 0;
+  if (dbs_max_temp_db_pages > EXTENT_SZ && DBS_TEMP == dbs->dbs_type && (dbs->dbs_n_pages + EXTENT_SZ) > dbs_max_temp_db_pages)
     return 0;
   if (dbs->dbs_disks)
     {
@@ -522,12 +524,12 @@ ext_get_dp (extent_t * ext, dp_addr_t near)
     {
       if (!DP_IN_EXTENT (near, ext))
 	GPF_T1 ("near outside of extent");
-	word = (near - ext->ext_dp) / BITS_IN_LONG;
-	if (ext->ext_pages[word] != 0xffffffff)
-	  {
-	    bit = word_free_bit (ext->ext_pages[word]);
-	    goto bit_found;
-	  }
+      word = (near - ext->ext_dp) / BITS_IN_LONG;
+      if (ext->ext_pages[word] != 0xffffffff)
+	{
+	  bit = word_free_bit (ext->ext_pages[word]);
+	  goto bit_found;
+	}
     }
   for (word = 0; word < EXTENT_SZ / BITS_IN_LONG; word++)
     {
@@ -1216,7 +1218,11 @@ buf_ext_check (buffer_desc_t * buf)
   if (!ext)
     {
       if (em == em->em_dbs->dbs_extent_map)
-	GPF_T1 ("freeing dp that is not part of the em");
+	{
+	  dbe_key_t * key = it->it_key;
+	  log_error ("Sanity check failed, key: %s, dp=%d", key->key_name ? key->key_name : "<unknown key>", dp);
+	  GPF_T1 ("freeing dp that is not part of the em");
+	}
       mutex_leave (em->em_mtx);
       em = em->em_dbs->dbs_extent_map;
       goto again;
@@ -1511,7 +1517,7 @@ em_compact (extent_map_t * em, int free_em)
 	      IN_DBS (em->em_dbs);
 	      dbs_locate_incbackup_bit (em->em_dbs, dp, &array, &array_page, &inx, &bit);
 	      array[inx] = 0;
-	      page_set_checksum_init (array);
+	      page_set_checksum_init ((db_buf_t) array);
 	      if (EXT_INDEX == EXT_TYPE (ext))
 		{
 		  /* when dropping a column extent map in a drop index, cpt remaps are possible, so if any, drop them. The remap pagge is dropped anyway as part of the em */
@@ -1682,9 +1688,7 @@ em_save_dp (extent_map_t * em)
 {
   char xx[15];
   sprintf (xx, "%ld", (long) em->em_buf->bd_page);
-  IN_TXN;
   dbs_registry_set (em->em_dbs, em->em_name, xx, 0);
-  LEAVE_TXN;
 }
 
 
@@ -1692,6 +1696,7 @@ void
 dbs_cpt_recov_write_extents (dbe_storage_t * dbs)
 {
   /* write out the extent maps. */
+  ASSERT_IN_TXN;
   DO_SET (index_tree_t *, it, &dbs->dbs_trees)
     {
       if (it->it_extent_map != dbs->dbs_extent_map

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -43,7 +43,7 @@ int
 sqlo_cr_is_identifiable (sqlo_t * so, ST * tree)
 {
   df_elt_t *dfe = so->so_copy_root;
-  if (!dfe || !dfe->dfe_type == DFE_DT)
+  if (!dfe || dfe->dfe_type != DFE_DT)
     return 0;
   if (!ST_P (tree, SELECT_STMT))
     return 0;

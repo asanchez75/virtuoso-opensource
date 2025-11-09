@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1374,18 +1374,15 @@ ks_free (key_source_t * ks)
   dk_set_free (ks->ks_out_slots);
   cv_free (ks->ks_local_test);
   cv_free (ks->ks_local_code);
-  if (ks->ks_out_map || ks->ks_v_out_map)
-    { /* There was no { and } here so there was unconditional free of everything after ks->ks_out_map . That was supposedly safe but waste of time */
-      dk_free_box ((caddr_t) ks->ks_out_map);
-      dk_free_box ((caddr_t) ks->ks_v_out_map);
-      dk_free_box ((caddr_t) ks->ks_vec_source);
-      dk_free_box ((caddr_t) ks->ks_vec_cast);
-      dk_free_box ((caddr_t) ks->ks_dc_val_cast);
-      dk_free_box (ks->ks_cast_null);
-      dk_free_box ((caddr_t) ks->ks_scalar_partition);
-      dk_free_box ((caddr_t) ks->ks_scalar_cp);
-      dk_free_box ((caddr_t) ks->ks_vec_cp);
-    }
+  dk_free_box ((caddr_t) ks->ks_out_map);
+  dk_free_box ((caddr_t) ks->ks_v_out_map);
+  dk_free_box ((caddr_t) ks->ks_vec_source);
+  dk_free_box ((caddr_t) ks->ks_vec_cast);
+  dk_free_box ((caddr_t) ks->ks_dc_val_cast);
+  dk_free_box (ks->ks_cast_null);
+  dk_free_box ((caddr_t) ks->ks_scalar_partition);
+  dk_free_box ((caddr_t) ks->ks_scalar_cp);
+  dk_free_box ((caddr_t) ks->ks_vec_cp);
   dk_set_free (ks->ks_always_null);
   dk_free_box ((caddr_t)ks->ks_qf_output);
   if (ks->ks_cl_order)
@@ -2881,7 +2878,7 @@ eql_compile (const char *string, client_connection_t * cli)
 
 
 void
-ssl_constant_init ()
+ssl_constant_init (void)
 {
   int n;
   constant_ssl = id_hash_allocate (101, sizeof (caddr_t), sizeof (caddr_t), treehash, treehashcmp);

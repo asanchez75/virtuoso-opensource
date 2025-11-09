@@ -5,7 +5,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -28,10 +28,10 @@ declare resp,inp,outp, url, url1, url2 any;
 
 resp := null;
 --url := coalesce ({?'url'}, 'http://' || sys_stat('st_host_name') || ':'||server_http_port()||'/router');
-url := coalesce ({?'url'}, 'http://' || cfg_item_value(virtuoso_ini_path(), 'URIQA','DefaultHost') ||'/router');
+url := coalesce ({?'url'}, 'http://' || virtuoso_ini_item_value ('URIQA','DefaultHost') ||'/router');
 url1 := coalesce ({?'url1'}, '');
 --url2 := coalesce ({?'url2'}, 'http://' || sys_stat('st_host_name') || ':'||server_http_port()||'/SumService');
-url2 := coalesce ({?'url2'}, 'http://' || cfg_item_value(virtuoso_ini_path(), 'URIQA','DefaultHost') ||'/SumService');
+url2 := coalesce ({?'url2'}, 'http://' || virtuoso_ini_item_value ('URIQA','DefaultHost') ||'/SumService');
 
 if ({?'exec'} is not null)
   {

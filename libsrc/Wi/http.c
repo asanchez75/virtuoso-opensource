@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -56,20 +56,6 @@
 #include "sqlver.h"
 #include "xmlenc.h"
 
-#ifdef WIN32
-#include <windows.h>
-#ifdef _MSC_VER
-#define HAVE_DIRECT_H
-#endif
-#endif
-
-#ifdef HAVE_DIRECT_H
-#include <direct.h>
-#include <io.h>
-#define PATH_MAX	 MAX_PATH
-#else
-#include <dirent.h>
-#endif
 #ifdef _SSL
 #include "util/sslengine.h"
 #include "util/ssl_compat.h"
@@ -83,11 +69,13 @@
 #define closesocket close
 #endif
 
-char *http_methods[] = { "NONE", "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", /* HTTP/1.1 */
-  			 "PROPFIND", "PROPPATCH", "COPY", "MOVE", "LOCK", "UNLOCK", "MKCOL",  /* WebDAV */
-			 "MGET", "MPUT", "MDELETE", 	/* URIQA */
-			 "REPORT", /* CalDAV */
-			 "TRACE", "PATCH", NULL };
+const char *http_methods[] = {
+  "NONE", "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS",		/* HTTP/1.1 */
+  "PROPFIND", "PROPPATCH", "COPY", "MOVE", "LOCK", "UNLOCK", "MKCOL",	/* WebDAV */
+  "MGET", "MPUT", "MDELETE",						/* URIQA */
+  "REPORT",								/* CalDAV */
+  "TRACE", "PATCH", NULL
+};
 resource_t *ws_dbcs;
 basket_t ws_queue;
 dk_mutex_t * ws_queue_mtx;
@@ -103,6 +91,7 @@ caddr_t dns_host_name;
 caddr_t temp_aspx_dir;
 char *www_maintenance_page = NULL;
 char *http_proxy_address = NULL;
+int32 enable_https_vd_renegotiate = 0;
 
 static id_hash_t * http_acls = NULL; /* ACL lists */
 static id_hash_t * http_url_cache = NULL; /* WS cached URLs */
@@ -200,7 +189,7 @@ get_qualified_host_name (void)
   return qualified ? box_copy (qualified) : box_dv_short_string ("localhost");
 }
 
-char * ws_url_escapes = ";/?:@&=+ \"#%<>";
+const char * ws_url_escapes = ";/?:@&=+ \"#%<>";
 
 void ws_proc_error (ws_connection_t * ws, caddr_t err);
 #ifdef _SSL
@@ -239,7 +228,7 @@ int http_ses_size = 0; /* init on viconfig */
 void ws_set_phy_path (ws_connection_t * ws, int dir, char * vsp_path);
 #define IS_DAV_DOMAIN(ws, path1) (ws && ws->ws_map && ws->ws_map->hm_is_dav)
 void pop_user_id (client_connection_t * cli);
-caddr_t ws_get_packed_hf (ws_connection_t * ws, const char * fld, char * deflt);
+caddr_t ws_get_packed_hf (ws_connection_t * ws, const char * fld, const char * deflt);
 #else
 #define IS_DAV_DOMAIN(ws, path1) (dav_root != NULL && (!strcmp (path1, dav_root) || !strcmp ("/", dav_root)))
 #define ws_get_packed_hf(ws,path1,deflt) NULL
@@ -295,6 +284,76 @@ ws_gethostbyaddr (const char * ip)
   return box_dv_short_string (host->h_name);
 }
 
+/* HTTP listeners startup query */
+/*                       0             1        2             3           4  */
+/*     5               6       7               8           9         10         11  */
+#define q_listen "select HL_INTERFACE, HL_TYPE, HL_PROTOCOLS, HL_CIPHERS, HL_DH_PARAM, " \
+    " HL_ECDH_CURVE, HL_KEY, HL_CERTIFICATE, HL_CA_LIST, HL_EXTRA, HL_VERYFY, HL_VERIFY_DEPTH" \
+    " from DB.DBA.SYS_HTTP_LISTENERS where HL_INTERFACE <> server_http_port()"
+
+/* TLS options */
+static ws_opt_t ws_tls_opts[] =
+{
+    {2, "https_protocols", &https_protocols, NULL, DV_STRING},             /* SSL_Protocols */
+    {3, "https_cipher_list", &https_cipher_list, NULL, DV_STRING},         /* SSL_Cipher_List */
+    {4, "https_dhparam", &https_dhparam, NULL, DV_STRING},                 /* SSL_DHparam */
+    {5, "https_ecdh_curve", &https_ecdh_curve, NULL, DV_STRING},           /* SSL_ECDH_Curve */
+    {6, "https_key", &https_key, NULL, DV_STRING},                         /* SSLPrivateKey */
+    {7, "https_cert", &https_cert, NULL, DV_STRING},                       /* SSLCertificate */
+    {8, "https_cv", &https_client_verify_file, NULL, DV_STRING},           /* X509ClientVerifyCAFile */
+    {9, "https_extra_chain_certificates", &https_extra, NULL, DV_STRING},  /* SSLExtraChainCertificate */
+    {10, "https_verify", NULL, &https_client_verify, DV_LONG_INT},         /* X509ClientVerify */
+    {11, "https_cv_depth", NULL, &https_client_verify_depth, DV_LONG_INT}, /* X509ClientVerifyDepth */
+    {-1, NULL, NULL, NULL, DV_LONG_INT}
+};
+
+static caddr_t *
+https_default_opts (void)
+{
+  dk_set_t set = NULL;
+  ws_opt_t *opt;
+
+  for (opt = ws_tls_opts; opt->wo_pos > 0; opt++)
+    {
+      caddr_t val;
+      if (opt->wo_dtp == DV_STRING && NULL == opt->wo_str_val[0])
+        continue;
+      val = opt->wo_dtp == DV_STRING ? box_dv_short_string (opt->wo_str_val[0]) : box_num (opt->wo_int_val[0]);
+      dk_set_push (&set, box_dv_short_string (opt->wo_name));
+      dk_set_push (&set, val);
+    }
+  return (caddr_t *) list_to_array (dk_set_nreverse (set));
+}
+
+static caddr_t *
+http_prepare_opts (local_cursor_t *lc)
+{
+  dk_set_t set = NULL;
+  ws_opt_t *opt;
+  caddr_t proto = lc_nth_col (lc, 1);
+  caddr_t opts = lc_nth_col (lc, 2);
+
+  if (DV_STRINGP (proto) && 0 == stricmp (proto, "SSL") && ARRAYP (opts) && box_length (opts))
+    {
+      /* HTTP_PATH qr comaptibility */
+      return box_copy_tree (opts);
+    }
+  if (DV_DB_NULL == DV_TYPE_OF (proto) || 0 == unbox (proto))
+    return NULL;
+  for (opt = ws_tls_opts; opt->wo_pos > 0; opt++)
+    {
+      caddr_t val = lc_nth_col (lc, opt->wo_pos);
+      if (DV_TYPE_OF (val) == DV_DB_NULL)
+        continue;
+      if (IS_STRING_DTP (DV_TYPE_OF (val)) && box_length (val) < 1)
+        continue;
+      dk_set_push (&set, box_dv_short_string (opt->wo_name));
+      dk_set_push (&set, box_copy_tree (val));
+    }
+  return (caddr_t *) list_to_array (dk_set_nreverse (set));
+}
+
+
 #define ACL_HIT_RESTORE(hit) \
       if (hit) \
 	{ \
@@ -314,13 +373,11 @@ static int http_acl_check_rate (ws_acl_t * elm, caddr_t name, int check_rate, in
   else if (check_rate == ACL_CHECK_HITS)
     {
       acl_hit_t * hit, **place;
-      int64 now;
-      timeout_t tv;
+      time_usec_t now_usec;
 
       res = elm->ha_flag;
-      get_real_time (&tv);
-      now = ((int64)tv.to_sec * 1000000) + (int64) tv.to_usec;
-      /*now = get_msec_real_time ();*/
+      now_usec = get_usec_real_time ();
+
       mutex_enter (http_acl_mtx);
       loc_hash = elm->ha_hits;
 #ifdef DEBUG
@@ -335,7 +392,7 @@ static int http_acl_check_rate (ws_acl_t * elm, caddr_t name, int check_rate, in
 
 	  hit = *place;
 
-	  elapsed = (float) (now - hit->ah_initial) / 1000000;
+	  elapsed = (float) (now_usec - hit->ah_initial) / 1000000;
 	  if (elapsed < 1) elapsed = 0.5;
 	  rate = (float)((hit->ah_count + 1) / elapsed);
 	  hit->ah_avg = rate;
@@ -355,7 +412,7 @@ static int http_acl_check_rate (ws_acl_t * elm, caddr_t name, int check_rate, in
 	  memset (hit, 0, sizeof (acl_hit_t));
 	  id_hash_set (loc_hash, (caddr_t) &new_name, (caddr_t) &hit);
 	}
-      if (!hit->ah_initial) hit->ah_initial = now;
+      if (!hit->ah_initial) hit->ah_initial = now_usec;
       hit->ah_count ++;
       if (hit_ret)
 	*hit_ret = hit;
@@ -437,7 +494,7 @@ http_acl_match (caddr_t *alist, caddr_t name, ccaddr_t dst, int obj_id, int rw_f
 static int
 ws_check_acl (ws_connection_t * ws, acl_hit_t ** hit)
 {
-  static char * szHttpAclName = "HTTP";
+  static const char * szHttpAclName = "HTTP";
   caddr_t *list, **plist;
   int rc = 1; /* all enabled by default */
 
@@ -905,9 +962,10 @@ error_end:
 }
 
 #define WS_LOG_DEFAULT_FMT "%h %u %t \"%r\" %s %b \"%{Referer}i\" \"%{User-agent}i\""
-char * http_log_format = WS_LOG_DEFAULT_FMT;
+const char * http_log_format = WS_LOG_DEFAULT_FMT;
 
-#ifndef WS_OLD_LOG
+#define TZ_TO_HHMM(x)  ((x / 60) * 100 + (x % 60))
+
 #define WS_LOG_ERROR \
       mutex_enter (ws_http_log_mtx); \
       fflush (http_log); \
@@ -924,15 +982,17 @@ static void
 log_info_http (ws_connection_t * ws, const char * code, OFF_T clen)
 {
   char * new_log = NULL;
-  char tmp[4096];
+  char tmp[HTTP_MAX_REQUEST_LEN];
   int tmp_len = sizeof (tmp) - sizeof (ws->ws_proto) - 1;
   char format[100];
   char buf[DKSES_OUT_BUFFER_LENGTH];
-  char *volatile ptr;
-  char *volatile start;
-  char * str;
+  const char *volatile ptr;
+  const char *volatile start;
+  const char * str;
   int volatile len;
   int http_resp_code = 0;
+  client_connection_t *cli = ws->ws_cli;
+  time_usec_t time_usec_now = 0;
   time_t now;
   struct tm *tm;
 #if defined (HAVE_LOCALTIME_R) && !defined (WIN32)
@@ -1023,8 +1083,36 @@ next_fragment:
 		      dk_free_tree (connvar_value);
 		    }
 		  break;
-	      default:
-		  WS_LOG_ERROR;
+	      case 'T':
+		if (!time_usec_now)
+		  time_usec_now = get_usec_real_time ();
+		if (!strcmp (format, "s"))
+		  {
+		    snprintf (tmp, sizeof (tmp), "%lld", (time_usec_now - cli->cli_start_time_usec) / 1000000UL);
+		    session_buffered_write (ses, tmp, strlen (tmp));
+		    break;
+		  }
+		else if (!strcmp (format, "ms"))
+		  {
+		    snprintf (tmp, sizeof (tmp), "%lld", (time_usec_now - cli->cli_start_time_usec) / 1000UL);
+		    session_buffered_write (ses, tmp, strlen (tmp));
+		    break;
+		  }
+		else if (!strcmp (format, "us"))
+		  {
+		    snprintf (tmp, sizeof (tmp), "%lld", (time_usec_now - cli->cli_start_time_usec));
+		    session_buffered_write (ses, tmp, strlen (tmp));
+		    break;
+		  }
+		else if (!strcmp (format, "rt"))
+		  {
+		    snprintf (tmp, sizeof (tmp), "%lld", rdtsc () - cli->cli_cl_start_ts);
+		    session_buffered_write (ses, tmp, strlen (tmp));
+		    break;
+		  }
+		/* no break; */
+		  default:
+		      WS_LOG_ERROR;
 	    }
 	  goto get_next;
 	}
@@ -1047,12 +1135,23 @@ next_fragment:
 	      month = tm->tm_mon + 1;
 	      day = tm->tm_mday;
 	      year = tm->tm_year + 1900;
-	      snprintf (tmp, sizeof (tmp), "[%02d/%s/%04d:%02d:%02d:%02d %+05li]",
-		  (tm->tm_mday), monthname [month - 1], year, tm->tm_hour, tm->tm_min, tm->tm_sec, (long) dt_local_tz_for_logs/36*100);
+	      snprintf (tmp, sizeof (tmp), "[%02d/%s/%04d:%02d:%02d:%02d %+05d]",
+		  (tm->tm_mday), monthname [month - 1], year, tm->tm_hour, tm->tm_min, tm->tm_sec, TZ_TO_HHMM(dt_local_tz_for_logs));
 	    }
 	  break;
+    case 'T':
+      if (!time_usec_now)
+	time_usec_now = get_usec_real_time ();
+      snprintf (tmp, sizeof (tmp), "%lld", (time_usec_now - cli->cli_start_time_usec) / 1000000UL);
+      break;
+    case 'D':
+      if (!time_usec_now)
+	time_usec_now = get_usec_real_time ();
+      snprintf (tmp, sizeof (tmp), "%lld", time_usec_now - cli->cli_start_time_usec);
+      break;
       case 'r':
-	  snprintf (tmp, sizeof (tmp), "%.*s", tmp_len, ws->ws_req_line && ws->ws_method != WM_ERROR ? ws->ws_req_line : "GET unspecified");
+      snprintf (tmp, sizeof (tmp), "%.*s", tmp_len, ws->ws_req_line
+	  && ws->ws_method != WM_ERROR ? ws->ws_req_line : "GET unspecified");
 	  strcat_ck (tmp, ws->ws_proto);
 	  tmp [sizeof (tmp) - 1] = 0;
 	  break;
@@ -1096,80 +1195,6 @@ format_string_completed:
   mutex_leave (ws_http_log_mtx);
   return;
 }
-#else
-static void
-log_info_http (ws_connection_t * ws, const char * code, OFF_T len)
-{
-  char buf[4096];
-  struct tm *tm;
-#if defined (HAVE_LOCALTIME_R) && !defined (WIN32)
-  struct tm tm1;
-#endif
-  time_t now;
-  int month, day, year;
-  int http_resp_code = 0;
-  caddr_t u_id = NULL;
-  caddr_t referer = NULL;
-  caddr_t user_agent = NULL;
-  char * new_log = NULL;
-
-  if (!http_log || !ws)
-    return;
-
-  if (code)
-    sscanf (code, "%*s %i", &http_resp_code);
-
-  referer = ws_get_packed_hf (ws, "Referer:", "");
-  user_agent = ws_get_packed_hf (ws, "User-Agent:", "");
-
-  buf[0] = 0;
-  time (&now);
-#if defined (HAVE_LOCALTIME_R) && !defined (WIN32)
-  tm = localtime_r (&now, &tm1);
-#else
-  tm = localtime (&now);
-#endif
-  month = tm->tm_mon + 1;
-  day = tm->tm_mday;
-  year = tm->tm_year + 1900;
-
-  u_id = ws_auth_get (ws);
-
-  snprintf (buf, sizeof (buf), "%s %s [%02d/%s/%04d:%02d:%02d:%02d %+05li] \"%.2000s%s\" %d " OFF_T_PRINTF_FMT " \"%.1000s\" \"%.500s\"\n",
-      ws->ws_client_ip, u_id, (tm->tm_mday), monthname [month - 1], year,
-      tm->tm_hour, tm->tm_min, tm->tm_sec, (long) dt_local_tz_for_logs/36*100,
-      (ws->ws_req_line
-#ifdef WM_ERROR
-       && ws->ws_method != WM_ERROR
-#endif
-       ? ws->ws_req_line : "GET unspecified"),
-      ws->ws_proto, http_resp_code, (OFF_T_PRINTF_DTP) len, referer ? referer : "", user_agent ? user_agent : "");
-
-  dk_free_box (u_id);
-  dk_free_box (referer);
-  dk_free_box (user_agent);
-
-  mutex_enter (ws_http_log_mtx);
-  new_log = http_log_file_check (tm);
-  if (new_log)
-    {
-      fflush (http_log);
-      fclose (http_log);
-      http_log = fopen (new_log, "a");
-      if (!http_log)
-	{
-	  log_error ("Can't open new HTTP log file (%s)", new_log);
-	  mutex_leave (ws_http_log_mtx);
-	  return;
-	}
-    }
-  fputs (buf, http_log);
-  fflush (http_log);
-  mutex_leave (ws_http_log_mtx);
-
-  return;
-}
-#endif
 
 
 caddr_t
@@ -1364,11 +1389,10 @@ ws_read_multipart_mime_post (ws_connection_t *ws, int *is_stream)
 	{
 	  body_start_offset = (long) unbox (part_body[0]);
 	  body_end_offset = (long) unbox (part_body[1]);
-
+	  if (body_end_offset < body_start_offset)
+	    body_end_offset = body_start_offset;
 	  dk_set_push (&ret_attrs,
-	      box_varchar_string ((db_buf_t) (msg + body_start_offset),
-		body_end_offset - body_start_offset,
-		DV_SHORT_STRING));
+	    box_varchar_string ((db_buf_t) (msg + body_start_offset), body_end_offset - body_start_offset, DV_SHORT_STRING));
 	}
 
       dk_set_push (&ret_attrs, box_conc (attr_prefix, part_name));
@@ -1398,7 +1422,7 @@ ws_write_failed (ws_connection_t * ws)
 static int
 ws_check_caps (ws_connection_t * ws)
 {
-  char *expect, *end;
+  const char *expect, *end;
   expect = ws_header_field (ws->ws_lines, "Expect:", NULL);
   if (!expect || !strlen (expect))
     return 1;
@@ -1416,8 +1440,7 @@ ws_check_caps (ws_connection_t * ws)
 static void
 ws_req_expect100 (ws_connection_t * ws)
 {
-  char *expect100;
-
+  const char *expect100;
   expect100 = ws_header_field (ws->ws_lines, "Expect:", NULL);
   if (!expect100)
     return;
@@ -1492,7 +1515,7 @@ ws_url_rewrite (ws_connection_t *ws)
   err = qr_quick_exec (url_rewrite_qr, cli, NULL, &lc, 3,
       ":0", ws->ws_path_string, QRP_STR,
       ":1", ws->ws_map->hm_url_rewrite_rule, QRP_STR,
-      ":2", NULL == ws->ws_params ? list (0)  : box_copy_tree (ws->ws_params), QRP_RAW  /* compatibility with old execution sequence */
+      ":2", NULL == ws->ws_params ? list (0)  : box_copy_tree ((caddr_t)(ws->ws_params)), QRP_RAW  /* compatibility with old execution sequence */
       );
 
   if (!err && lc && DV_ARRAY_OF_POINTER == DV_TYPE_OF (lc->lc_proc_ret)
@@ -1566,6 +1589,8 @@ ws_path_and_params (ws_connection_t * ws)
     case 3:
       if (0 == memcmp (ws->ws_req_line, "GET", 3))
         ws->ws_method = WM_GET;
+      if (0 == memcmp (ws->ws_req_line, "PUT", 3))
+        ws->ws_method = WM_PUT;
       break;
     case 4:
       if (0 == memcmp (ws->ws_req_line, "POST", 4))
@@ -1576,6 +1601,10 @@ ws_path_and_params (ws_connection_t * ws)
         ws->ws_method = WM_URIQA_MGET;
       else if (0 == memcmp (ws->ws_req_line, "MPUT", 4))
         ws->ws_method = WM_URIQA_MPUT;
+      break;
+    case 6:
+      if (0 == memcmp (ws->ws_req_line, "DELETE", 6))
+        ws->ws_method = WM_DELETE;
       break;
     case 7:
       if (0 == memcmp (ws->ws_req_line, "MDELETE", 7))
@@ -1604,10 +1633,10 @@ ws_path_and_params (ws_connection_t * ws)
   if (ws->ws_proto_no > 10)
     tws_1_1_requests++;
 
-  ws->ws_try_pipeline = (nc_strstr ((unsigned char *) ws_header_field (ws->ws_lines, "Connection:", ""),
+  ws->ws_try_pipeline = (nc_strstr ((unsigned const char *) ws_header_field (ws->ws_lines, "Connection:", ""),
 	(unsigned char *) "Keep-Alive") ||
                           (ws->ws_proto_no > 10
-			  && !nc_strstr ((unsigned char *) ws_header_field (ws->ws_lines, "Connection:", ""),
+			  && !nc_strstr ((const unsigned char *) ws_header_field (ws->ws_lines, "Connection:", ""),
 			    (unsigned char *) "close")));
 #ifndef VIRTUAL_DIR
     {
@@ -1620,10 +1649,10 @@ ws_path_and_params (ws_connection_t * ws)
       char *szSlashSlash = strstr (ws->ws_req_line + inx + 1, "://");
       if (szSlashSlash)
 	ws->ws_try_pipeline = (NULL !=
-	    nc_strstr (ws_header_field (ws->ws_lines, "Proxy-Connection:", ""), "Keep-Alive"));
+	    nc_strstr ((const unsigned char *)ws_header_field (ws->ws_lines, "Proxy-Connection:", ""), "Keep-Alive"));
       else if (ws->ws_proto_no < 11)
 	ws->ws_try_pipeline = (NULL !=
-	    nc_strstr (ws_header_field (ws->ws_lines, "Connection:", ""), "Keep-Alive"));
+	    nc_strstr ((const unsigned char *)ws_header_field (ws->ws_lines, "Connection:", ""), "Keep-Alive"));
     }*/
   n_fill = 0;
   ch = '\x0';
@@ -1722,7 +1751,7 @@ ws_path_and_params (ws_connection_t * ws)
   if (!is_proxy_request && body_like_post)
     {
       caddr_t *params = NULL;
-      char *szContentType = ws_header_field (ws->ws_lines, "Content-type:",
+      const char *szContentType = ws_header_field (ws->ws_lines, "Content-type:",
 	  "application/octet-stream");
 
       while (*szContentType && *szContentType <= '\x20')
@@ -1781,7 +1810,7 @@ ws_path_and_params (ws_connection_t * ws)
 }
 
 int
-http_method_id (char * method)
+http_method_id (const char * method)
 {
   int inx, meth = 0;
   if (!method)
@@ -1800,7 +1829,7 @@ http_method_id (char * method)
 void
 http_set_default_options (ws_connection_t * ws)
 {
-  static char * defs[] = { "GET", "HEAD", "POST", "OPTIONS", NULL };
+  static const char * defs[] = { "GET", "HEAD", "POST", "OPTIONS", NULL };
   int inx, m;
   memset (ws->ws_options, 0, sizeof (ws->ws_options));
   for (inx = 0; NULL != defs[inx]; inx ++)
@@ -1810,7 +1839,7 @@ http_set_default_options (ws_connection_t * ws)
     }
 }
 
-char *
+const char *
 http_get_method_string (int id)
 {
   return http_methods [id];
@@ -1884,6 +1913,7 @@ ws_clear (ws_connection_t * ws, int error_cleanup)
       dk_free_tree ((box_t) ws->ws_redirect_from);
       ws->ws_redirect_from = NULL;
       ws->ws_in_error_handler = 0;
+      ws->ws_method_name[0] = 0;
     }
   dk_free_tree ((box_t) ws->ws_stream_params);
   ws->ws_stream_params = NULL;
@@ -1907,7 +1937,7 @@ ws_clear (ws_connection_t * ws, int error_cleanup)
   ws->ws_req_len = 0;
   if (ws->ws_req_body)
     {
-      dk_free_tree (ws->ws_req_body);
+      dk_free_tree ((caddr_t)(ws->ws_req_body));
       ws->ws_req_body = NULL;
     }
   ws->ws_map = NULL;
@@ -1928,8 +1958,19 @@ ws_clear (ws_connection_t * ws, int error_cleanup)
 char http_server_id_string_buf [1024];
 char *http_server_id_string = NULL;
 char *http_client_id_string = "Mozilla/4.0 (compatible; OpenLink Virtuoso)";
+uint32 http_default_client_req_timeout = 100;
+extern char * https_csp;
 
 static char hsts_header_buf[128];
+static char csp_header_buf[128];
+caddr_t http_host_domain_url = NULL;
+int32 upgrade_insecure_http = 0;
+
+#ifdef _SSL
+#define CSP_HEADER(ws) ((https_csp != NULL) ? csp_header_buf : "")
+#else
+#define CSP_HEADER(ws)  ""
+#endif
 
 static char *
 hsts_header_line (ws_connection_t * ws)
@@ -2017,7 +2058,7 @@ static caddr_t *
 ws_header_line_to_array (caddr_t string)
 {
   int len;
-  char buf [10000];
+  char buf [HTTP_MAX_REQUEST_LEN];
   dk_set_t lines = NULL;
   caddr_t * headers = NULL;
   dk_session_t * ses = NULL;
@@ -2035,16 +2076,18 @@ ws_header_line_to_array (caddr_t string)
 
     }
   END_READ_FAIL (ses);
-  dk_free_box (ses);
+  dk_free_box ((caddr_t)ses);
   headers = (caddr_t *) list_to_array (dk_set_nreverse (lines));
   return headers;
 }
 
-static char *
-ws_get_mime_variant (char * mime, char ** found)
+static const char *
+ws_get_mime_variant (char * mime, const char ** found)
 {
-  static char * compat[] = {"text/plain", "text/*", NULL, NULL}; /* for now text/plain only, can be added more */
+  static const char * compat[] = {"text/plain", "text/*", NULL, NULL}; /* for now text/plain only, can be added more */
   int inx;
+  if (!strchr(mime, '/'))
+    return "*";
   *found = NULL;
   for (inx = 0; NULL != compat[inx]; inx += 2)
     {
@@ -2061,7 +2104,7 @@ ws_get_mime_variant (char * mime, char ** found)
 static const char *
 ws_check_accept (ws_connection_t * ws, const char * mime, const char * code, int check_only, OFF_T clen, const char * charset)
 {
-  static char *fmt =
+  static const char *fmt =
       "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n"
       "<html><head>\n"
       "<title>406 Not Acceptable</title>\n"
@@ -2077,7 +2120,8 @@ ws_check_accept (ws_connection_t * ws, const char * mime, const char * code, int
   char buf [1000];
   caddr_t ctype = NULL, cenc = NULL;
   caddr_t * asked;
-  char * match = NULL, * found = NULL;
+  const char * match = NULL;
+  const char * found = NULL;
   int inx;
   float maxq = 0;
   int ignore = (ws->ws_p_path_string ?
@@ -2097,11 +2141,13 @@ ws_check_accept (ws_connection_t * ws, const char * mime, const char * code, int
       cenc = ws_mime_header_field (headers, "Content-Type", "charset", 0);
       if (NULL != cenc)
 	charset = cenc;
-      dk_free_tree (headers);
+      dk_free_tree ((caddr_t)headers);
     }
   if (!mime)
     mime = "text/html";
   asked = ws_split_ac_header (accept);
+  if (!BOX_ELEMENTS(asked))
+    goto done;
   DO_BOX_FAST_STEP2 (caddr_t, p, caddr_t, q, inx, asked)
     {
       float qf = unbox_float (q);
@@ -2118,7 +2164,7 @@ ws_check_accept (ws_connection_t * ws, const char * mime, const char * code, int
   END_DO_BOX;
   if (!match)
     {
-      char * cname = ws->ws_resource ? ws->ws_resource : ( ws->ws_map && ws->ws_map->hm_def_page ? ws->ws_map->hm_def_page : "index.html");
+      const char * cname = ws->ws_resource ? ws->ws_resource : ( ws->ws_map && ws->ws_map->hm_def_page ? ws->ws_map->hm_def_page : "index.html");
       caddr_t tmpbuf;
 
       code = "HTTP/1.1 406 Unacceptable";
@@ -2159,15 +2205,49 @@ ws_check_accept (ws_connection_t * ws, const char * mime, const char * code, int
 
       dk_free_tree (ws->ws_header);
       ws->ws_header = strses_string (ses);
-      dk_free_tree (headers);
-      dk_free_box (ses);
+      dk_free_tree ((caddr_t)headers);
+      dk_free_box ((caddr_t)ses);
     }
+done:
   dk_free_tree (ctype);
   dk_free_tree (cenc);
-  dk_free_tree (asked);
+  dk_free_tree ((caddr_t)asked);
   dk_free_tree (accept);
   return check_only ? NULL : code;
 }
+
+static dk_set_t http_default_allow_headers_list;
+int32 http_ac_max_age = 86400;
+/*char * http_ac_default_cors;*/
+
+char *http_access_control_allow_default_headers =
+    "Accept, Authorization, Content-Length, Content-Type, Depth, DPoP, If-None-Match,"
+    " Link, Location, On-Behalf-Of, Origin, Slug, WebID-TLS, X-Requested-With";
+
+#define  WS_CORS_DEFAULT_ALLOW_HEADERS http_access_control_allow_default_headers
+
+
+static char *http_default_exposed_headers[] = {
+  "Access-Control-Allow-Headers",
+  "Access-Control-Allow-Methods",
+  "Access-Control-Allow-Origin",
+  "Allow",
+  "Accept-Patch",
+  "Accept-Post",
+  "Authorization",
+  "Content-Length",
+  "Content-Type",
+  "ETag",
+  "Last-Modified",
+  "Link",
+  "Location",
+  "Updates-Via",
+  "User",
+  "Vary",
+  "WAC-Allow",
+  "WWW-Authenticate",
+  NULL
+};
 
 #define WS_CORS_STAR (caddr_t*)-1
 
@@ -2200,69 +2280,149 @@ ws_split_cors (caddr_t str)
   return (caddr_t *) list_to_array (dk_set_nreverse (acl_set_ptr));
 }
 
+/*
+ * currently we allow client to expose all headres returned as a legacy/backward compat approach,
+ * in future we may restrict/filter the list
+ * this also apples to ac-allow-methods, these are specific by domain, so keep ones for dav in dav
+ */
+static void
+http_add_cors_expose_headers (ws_connection_t * ws, char * buf, size_t buf_len)
+{
+  char *header;
+  dtp_t *pos;
+  int hlen, inx;
+  strcat_size_ck (buf, "Access-Control-Expose-Headers: ", buf_len);
+  /* first the ones set by app if any, minimal header is x:y<cr><lf> */
+  if (ws->ws_header && box_length (ws->ws_header) > 4)
+    {
+      caddr_t *hdrs = ws_header_line_to_array (ws->ws_header);
+      DO_BOX (caddr_t, hdr, inx, hdrs)
+        {
+          char * sep = strchr (hdr, ':');
+          if (sep) *sep = 0;
+          if (sep && !ncs_strstr (buf, hdr))
+            {
+              strcat_size_ck (buf, hdr, buf_len);
+              strcat_size_ck (buf, ",", buf_len);
+            }
+        }
+      END_DO_BOX;
+      dk_free_tree ((caddr_t)hdrs);
+    }
+  /* next we add default set of headers, should cleanup and make precise list,
+   * present list is one from dav.sql/options
+   * various headers added by a reason, se keep them for now
+   */
+  for (inx = 0; NULL != (header = http_default_exposed_headers[inx]); inx++)
+    {
+      hlen = strlen (header);
+      /* here we see if already set by app, this is to avoid duplicates */
+      if ((NULL != (pos = ncs_strstr (buf, header))) && ',' == pos[hlen])
+        continue;
+      strcat_size_ck (buf, header, buf_len);
+      strcat_size_ck (buf, ",", buf_len);
+    }
+  buf[strlen (buf) - 1] = 0;
+  strcat_size_ck (buf, "\r\n", buf_len);
+}
+
+static void
+http_add_cors_allow_headers (ws_connection_t * ws, char * buf, size_t buf_len)
+{
+  id_hash_t * ht_allow_rules = (ws->ws_map && ws->ws_map->hm_cors_allow_headers) ? ws->ws_map->hm_cors_allow_headers : NULL;
+  caddr_t requested_headers = ws_mime_header_field (ws->ws_lines, "Access-Control-Request-Headers", NULL, 1);
+  dk_set_t requested = NULL;
+  char * comma = NULL;
+  static caddr_t default_deny_all;
+
+  if (!default_deny_all)
+    default_deny_all = box_dv_short_string ("!ALL");
+
+  split_string (requested_headers, ", ", &requested);
+
+  strcat_size_ck (buf, "Access-Control-Allow-Headers: ", buf_len);
+  if (NULL == ht_allow_rules) /* if no rules at all, then we print default */
+    {
+      strcat_size_ck (buf, WS_CORS_DEFAULT_ALLOW_HEADERS, buf_len);
+      strcat_size_ck (buf, ",", buf_len);
+    }
+  else
+    {
+      DO_IDHASH (caddr_t, header, ptrlong, v, ht_allow_rules) /* if there are rules, print what is enabled */
+        {
+          if ((ptrlong)1 == v && 0 != stricmp (header, default_deny_all))
+            {
+              strcat_size_ck (buf, header, buf_len);
+              strcat_size_ck (buf, ", ", buf_len);
+            }
+        }
+      END_DO_IDHASH;
+    }
+  if (NULL == ht_allow_rules || NULL == id_hash_get (ht_allow_rules, (caddr_t) &default_deny_all))
+    {
+      DO_SET (caddr_t, header, &requested) /* then we look what is requested, if not in the list above or no list at all, print */
+        {
+          if (NULL == ht_allow_rules || NULL == id_hash_get (ht_allow_rules, (caddr_t) &header))
+            {
+              strcat_size_ck (buf, header, buf_len);
+              strcat_size_ck (buf, ", ", buf_len);
+            }
+        }
+      END_DO_SET ();
+    }
+  comma = strrchr (buf, ',');
+  if (comma)
+    *comma = '\0';
+  strcat_size_ck (buf, "\r\n", buf_len);
+  dk_free_tree (requested_headers);
+  if (NULL != requested)
+    dk_free_tree (list_to_array (dk_set_nreverse (requested)));
+}
+
+static inline int
+ws_cors_match (dk_set_t * set, caddr_t origin)
+{
+  DO_SET (caddr_t, pattern, set)
+    {
+      if (DVC_MATCH == cmp_like (origin, pattern, NULL, 0, LIKE_ARG_CHAR, LIKE_ARG_CHAR))
+        return 1;
+    }
+  END_DO_SET();
+  if (!stricmp (origin, "null"))
+    return 1;
+  return 0;
+}
+
 static int
 ws_cors_check (ws_connection_t * ws, char * buf, size_t buf_len)
 {
 #ifdef VIRTUAL_DIR
   caddr_t origin = ws_mime_header_field (ws->ws_lines, "Origin", NULL, 1);
-  char * ret_origin = NULL;
   int rc = 0;
+  /* CORS enabled Vdir, and Origin present, go ahead */
   if (origin && ws->ws_map && ws->ws_map->hm_cors)
     {
-      caddr_t * orgs = ws_split_cors (origin), * place = NULL;
-      int inx;
-      if (ws->ws_map->hm_cors == (id_hash_t *) WS_CORS_STAR)
+      /* match the Origin first */
+      if (ws->ws_map->hm_cors == (dk_set_t) WS_CORS_STAR || ws_cors_match (&ws->ws_map->hm_cors, origin))
 	{
-	  if (orgs != WS_CORS_STAR && BOX_ELEMENTS_0 (orgs) > 0)
-	    ret_origin = orgs[0];
-	  rc = 1;
-	}
-      else if (orgs != WS_CORS_STAR)
-	{
-	  DO_BOX (caddr_t, org, inx, orgs)
+	  char ach[2000] = { 0 };
+          /* client have permissions to proceed, so we say ac allow origin  */
+	  snprintf (buf, buf_len, "Access-Control-Allow-Origin: %s\r\n%sAccess-Control-Max-Age: %d\r\n",
+	      origin,
+	      WS_NOT_HDR (ws, "Access-Control-Allow-Credentials:") ? "Access-Control-Allow-Credentials: true\r\n" : "",
+              http_ac_max_age); /* max age, for now a constant, should be a config param */
+          /* preflight next, allow or disallow  headers  */
+	  if (WS_NOT_HDR (ws, "Access-Control-Expose-Headers:"))
 	    {
-	      if (NULL != (place = (caddr_t *) id_hash_get_key (ws->ws_map->hm_cors, (caddr_t) & org)))
-		{
-		  ret_origin = org;
-		  rc = 1;
-		  break;
-		}
-	    }
-	  END_DO_BOX;
-	}
-      if (rc)
-	{
-	  char ach[2000] = {0}; 
-	  if (ws->ws_header && box_length (ws->ws_header))
-	    {
-	      caddr_t * hdrs = ws_header_line_to_array (ws->ws_header);
-	      strcat_ck (ach, "Access-Control-Expose-Headers: ");
-	      DO_BOX (caddr_t, hdr, inx, hdrs)
-		{
-		  char * sep = strchr (hdr, ':');
-		  if (sep) *sep = 0;
-		  if (sep && !strstr (ach, hdr))
-		    {
-		      strcat_ck (ach, hdr);
-		      strcat_ck (ach, ",");
-		    }
-		}
-	      END_DO_BOX;
-	      dk_free_tree (hdrs);
-	      ach[strlen (ach) - 1] = 0;
-	      strcat_ck (ach, "\r\n");
+              http_add_cors_expose_headers (ws, ach, sizeof(ach));
 	    }
 	  if (WS_NOT_HDR (ws, "Access-Control-Allow-Headers:"))
 	    {
-	      strcat_ck (ach, "Access-Control-Allow-Headers: Accept, Authorization, Slug, Link, Origin, Content-type");
-	      strcat_ck (ach, "\r\n");
+	      http_add_cors_allow_headers (ws, ach, sizeof (ach));
 	    }
-	  snprintf (buf, buf_len, "Access-Control-Allow-Origin: %s\r\n%s%s", 
-	      ret_origin ? ret_origin : "*",
-	      (ret_origin && WS_NOT_HDR (ws, "Access-Control-Allow-Credentials:")) ? "Access-Control-Allow-Credentials: true\r\n" : "", ach);
-	}
-      if (orgs != WS_CORS_STAR)
-	dk_free_tree (orgs);
+	  strcat_size_ck (buf, ach, buf_len);
+          rc = 1;
+        }
     }
   dk_free_tree (origin);
   if (0 == rc && ws->ws_map && ws->ws_map->hm_cors_restricted)
@@ -2270,6 +2430,8 @@ ws_cors_check (ws_connection_t * ws, char * buf, size_t buf_len)
 #endif
   return 1;
 }
+
+#define CONTENT_ALLOWED(ws) (101 != (ws)->ws_status_code && 204 != (ws)->ws_status_code && 304 != (ws)->ws_status_code)
 
 void
 ws_strses_reply (ws_connection_t * ws, const char * volatile code)
@@ -2288,13 +2450,18 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
     {
       dk_session_t * strses = ws->ws_strses;
       client_connection_t * cli = ws->ws_cli;
-      caddr_t url,
-	  xslt_url = ws->ws_xslt_url, xslt_parms = ws->ws_xslt_params;
+      caddr_t url = ws->ws_xslt_doc_url, xslt_url = ws->ws_xslt_url, xslt_parms = ws->ws_xslt_params;
       caddr_t err = NULL, * exec_params = NULL;
-      size_t current_url_len = strlen (http_port) + strlen (ws->ws_path_string) + 18;
-      caddr_t current_url = dk_alloc_box (current_url_len, DV_SHORT_STRING);
-      snprintf (current_url, current_url_len, "http://localhost:%s%s", http_port, ws->ws_path_string);
-      url = current_url;
+
+      if (NULL == url)
+        {
+          /* The next is a guess, virtual path may not be on localhost:server_port,
+             unfortunately this lagacy is used by applications, so we keep it for now.
+           */
+          size_t url_len = strlen (http_port) + strlen (ws->ws_path_string) + 18;
+          ws->ws_xslt_doc_url = url = dk_alloc_box (url_len, DV_SHORT_STRING);
+          snprintf (url, url_len, "http://localhost:%s%s", http_port, ws->ws_path_string);
+        }
 
       if (!http_xslt_qr || http_xslt_qr->qr_to_recompile)
 	err = srv_make_new_error ("42001", "HT004", "No DB.DBA.__HTTP_XSLT defined");
@@ -2350,8 +2517,9 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
       ws->ws_xslt_url = NULL;
       dk_free_tree (ws->ws_xslt_params);
       ws->ws_xslt_params = NULL;
+      dk_free_box (ws->ws_xslt_doc_url);
+      ws->ws_xslt_doc_url = NULL;
       len = strses_length (ws->ws_strses);
-      dk_free_box (current_url);
     }
 #endif
   if (http_print_warnings_in_output)
@@ -2401,7 +2569,7 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
   accept_gz = ws_get_packed_hf (ws, "Accept-Encoding:", "");
   if (IS_CHUNKED_OUTPUT (ws))
     cnt_enc = WS_CE_CHUNKED;
-  else if (enable_gzip && accept_gz && strstr (accept_gz, "gzip") && ws->ws_proto_no == 11)
+  else if (enable_gzip && accept_gz && strstr (accept_gz, "gzip") && ws->ws_proto_no == 11 && CONTENT_ALLOWED(ws))
     {
       cnt_enc = WS_CE_GZIP;
       ws->ws_try_pipeline = 0; /* browsers based on webkit workaround */
@@ -2431,7 +2599,7 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
 	}
 /*      fprintf (stdout, "\nREPLY-----\n%s", tmp); */
       /* mime type */
-      if (ws->ws_status_code != 101 && WS_NOT_HDR (ws, "Content-Type:"))
+      if (CONTENT_ALLOWED(ws) && WS_NOT_HDR (ws, "Content-Type:"))
 	{
 #ifdef BIF_XML
 	  if (media_type)
@@ -2466,12 +2634,21 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
       if (ws->ws_method == WM_OPTIONS && ws->ws_status_code < 400 &&
 	  (NULL == ws->ws_header || NULL == nc_strstr ((unsigned char *) ws->ws_header, (unsigned char *) "Allow:")))
 	{
-	  len = 0;
 	  strses_flush (ws->ws_strses);
 	  SES_PRINT (ws->ws_session, "Allow: ");
 	  http_options_print (ws, ws->ws_session);
 	  SES_PRINT (ws->ws_session, "\r\n");
 	}
+
+      if (ws->ws_method == WM_OPTIONS && ws->ws_status_code < 400 &&
+	  (NULL == ws->ws_header || NULL == nc_strstr ((unsigned char *) ws->ws_header, (unsigned char *) "Access-Control-Allow-Methods:")))
+	{
+	  strses_flush (ws->ws_strses);
+	  SES_PRINT (ws->ws_session, "Access-Control-Allow-Methods: ");
+	  http_options_print (ws, ws->ws_session);
+	  SES_PRINT (ws->ws_session, "\r\n");
+	}
+
 
       /* timestamp */
       if (WS_NOT_HDR (ws, "Date:"))
@@ -2498,10 +2675,14 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
 	    SES_PRINT (ws->ws_session, tmp);
 	}
 
-      if (ws->ws_status_code != 101)
-      SES_PRINT (ws->ws_session, "Accept-Ranges: bytes\r\n");
+      if (WS_NOT_HDR (ws, "Accept-Ranges"))
+	{
+          if (CONTENT_ALLOWED(ws))
+	    SES_PRINT (ws->ws_session, "Accept-Ranges: bytes\r\n");
+	}
 
       SES_PRINT (ws->ws_session, hsts_header_line(ws));
+      SES_PRINT (ws->ws_session, CSP_HEADER(ws));
 
       if (ws->ws_header) /* user-defined headers */
 	{
@@ -2516,7 +2697,7 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
 	  snprintf (tmp, sizeof (tmp), "Transfer-Encoding: chunked\r\nContent-Encoding: gzip\r\n");
 	  SES_PRINT (ws->ws_session, tmp);
 	}
-      else if (ws->ws_status_code != 101 && WS_NOT_HDR(ws, "Content-Length:")) /* plain body */
+      else if (CONTENT_ALLOWED(ws) && WS_NOT_HDR(ws, "Content-Length:")) /* plain body */
 	{
 	  snprintf (tmp, sizeof (tmp), "Content-Length: %ld\r\n", len);
 	  SES_PRINT (ws->ws_session, tmp);
@@ -2542,7 +2723,7 @@ ws_strses_reply (ws_connection_t * ws, const char * volatile code)
 	    {
 	      strses_write_out_gz (ws->ws_strses, ws->ws_session, &gzctx);
 	    }
-	  else if (WS_NOT_HDR (ws, "Content-Length:"))
+         else if (WS_NOT_HDR (ws, "Content-Length:") && CONTENT_ALLOWED(ws))
 	    {
 	      strses_write_out (ws->ws_strses, ws->ws_session);
 	    }
@@ -2573,7 +2754,7 @@ static char *fmt1 =
   "  </head>\n"
   "  <body>\n"
   "    <h3>Error %.5s</h3><pre>\n";
-static char *fmt2 = "\n"
+static const char *fmt2 = "\n"
   "  </pre></body>\n"
   "</html>\n";
 
@@ -2606,21 +2787,23 @@ static char *fmt1 =
   SES_PRINT (ws->ws_strses, tmp);
   dk_free_box (tmp);
   dks_esc_write (ws->ws_strses, message, strlen (message), ws->ws_charset, default_charset, DKS_ESC_PTEXT);
-
-  SES_PRINT (ws->ws_strses, "    URI  = '");
-  dks_esc_write (ws->ws_strses, uri, strlen (uri), ws->ws_charset, default_charset, DKS_ESC_PTEXT);
-  SES_PRINT (ws->ws_strses, "'\n");
+  if (NULL != uri)
+    {
+      SES_PRINT (ws->ws_strses, "    URI  = '");
+      dks_esc_write (ws->ws_strses, uri, strlen (uri), ws->ws_charset, default_charset, DKS_ESC_PTEXT);
+      SES_PRINT (ws->ws_strses, "'\n");
 #ifdef DEBUG
-  SES_PRINT (ws->ws_strses, "    PATH = '");
-  dks_esc_write (ws->ws_strses, uri, strlen (uri), ws->ws_charset, default_charset, DKS_ESC_PTEXT);
-  SES_PRINT (ws->ws_strses, "'\n");
+      SES_PRINT (ws->ws_strses, "    PATH = '");
+      dks_esc_write (ws->ws_strses, uri, strlen (uri), ws->ws_charset, default_charset, DKS_ESC_PTEXT);
+      SES_PRINT (ws->ws_strses, "'\n");
 #endif
+    }
   SES_PRINT (ws->ws_strses, "  </pre></body></html>\n");
 }
 
 #define REPLY_SENT "reply sent"
 
-char * www_root = ".";
+char *www_root = ".";
 
 
 static int
@@ -2852,6 +3035,7 @@ send_multipart_byteranges (ws_connection_t *ws, int fd,
       "Server: %.1000s\r\n"
       "Connection: %s\r\n"
       "%s"
+      "%s"
       "\r\n"
       "--THIS_STRING_SEPARATES\r\n"
       ,
@@ -2861,7 +3045,8 @@ send_multipart_byteranges (ws_connection_t *ws, int fd,
       date_now,
       http_server_id_string,
       ws->ws_try_pipeline ? "Keep-Alive" : "close",
-      hsts_header_line (ws));
+      hsts_header_line (ws),
+      CSP_HEADER(ws));
   SES_PRINT (ws->ws_session, head);
   fprintf (stdout, "Head_mp = %s\n", head);
 
@@ -3015,8 +3200,17 @@ ws_file (ws_connection_t * ws)
   ctype = ws_file_ctype (fname);
   if ((fd = open (path, OPEN_FLAGS_RO)) < 0)
     {
-      ws_http_error (ws, "HTTP/1.1 404 File not found", "The requested URL was not found", lfname, path);
-      HTTP_SET_STATUS_LINE (ws, "HTTP/1.1 404 File not found", 0);
+      if (MAINTENANCE) /* it sould be set maintenance page w/o such, keep status 503 */
+        {
+          ws_http_error (ws, "HTTP/1.1 503 Service Temporarily Unavailable",
+              "Service Temporarily Unavailable, please try again later", NULL, NULL);
+          HTTP_SET_STATUS_LINE (ws, "HTTP/1.1 503 Service Temporarily Unavailable", 1);
+        }
+      else
+        {
+          ws_http_error (ws, "HTTP/1.1 404 File not found", "The requested URL was not found", lfname, path);
+          HTTP_SET_STATUS_LINE (ws, "HTTP/1.1 404 File not found", 0);
+        }
       return;
     }
   if (V_FSTAT (fd, &st) || 0 != (st.st_mode & S_IFDIR))
@@ -3143,6 +3337,7 @@ ws_file (ws_connection_t * ws)
 	      "%s"
 	      "%s"
 	      "%s"
+	      "%s"
 	      "%s",
 	      head_beg,
 	      (OFF_T_PRINTF_DTP) off,
@@ -3154,6 +3349,7 @@ ws_file (ws_connection_t * ws)
 	      ws->ws_try_pipeline ? "Keep-Alive" : "close",
 	      hsts_header_line(ws),
 	      (MAINTENANCE) ? "Retry-After: 1800\r\n" : "",
+              CSP_HEADER(ws),
 	      ws->ws_header ? ws->ws_header : "",
 	      ranges_buffer
 	      );
@@ -3595,7 +3791,7 @@ ws_check_rdf_accept (ws_connection_t *ws)
   caddr_t err = NULL;
   int rc = LTE_OK, retc = 0;
   local_cursor_t * lc = NULL;
-  char * accept;
+  const char * accept;
 
   if (!http_check_rdf_accept || ws->ws_status_code != 404)
     return 0;
@@ -3636,7 +3832,7 @@ ws_check_rdf_accept (ws_connection_t *ws)
   err = qr_quick_exec (qr, cli, NULL, &lc, 4,
       ":0", ws->ws_path_string, QRP_STR,
       ":1", ws->ws_map->hm_l_path, QRP_STR,
-      ":2", box_copy_tree (ws->ws_lines), QRP_RAW,
+      ":2", box_copy_tree ((ccaddr_t)(ws->ws_lines)), QRP_RAW,
       ":3", (ptrlong) http_check_rdf_accept, QRP_INT
       );
 
@@ -3652,6 +3848,10 @@ ws_check_rdf_accept (ws_connection_t *ws)
   CLI_NEXT_USER (cli);
   lt_threads_set_inner (cli->cli_trx, 0);
   LEAVE_TXN;
+  if (rc != LTE_OK)
+    {
+      MAKE_TRX_ERROR (rc, err, LT_ERROR_DETAIL (cli->cli_trx));
+    }
 
 error_end:
   if (err && err != (caddr_t)SQL_NO_DATA_FOUND)
@@ -3679,7 +3879,7 @@ extern int64 dk_n_total;
 void
 ws_mem_record (ws_connection_t * ws)
 {
-  char * h = ws_header_field (ws->ws_lines, "X-Recording:", NULL);
+  const char * h = ws_header_field (ws->ws_lines, "X-Recording:", NULL);
   static FILE *fp;
   if (!h) return;
   while (isspace (*h)) h ++;
@@ -3698,7 +3898,7 @@ ws_request (ws_connection_t * ws)
   static query_t * http_call = NULL;
 
   char p_name [PATH_ELT_MAX_CHARS + 20];
-  long start;
+  time_msec_t start;
   char * path1;
   caddr_t err;
   int rc;
@@ -4112,7 +4312,7 @@ run_in_dav:
 #endif
       if (!sch_proc_def (isp_schema (NULL), p_name)
 	  || !ws->ws_map
-	  || !ws->ws_map->hm_vsp_uid)
+	  || (!deflt && !ws->ws_map->hm_vsp_uid))
 	{
 	  strcpy_ck (p_name, "WS.WS.DEFAULT");
 	  deflt = 1;
@@ -4207,7 +4407,7 @@ error_in_procedure:
   lt_threads_set_inner (cli->cli_trx, 0);
   LEAVE_TXN;
   if (prof_on && start)
-    prof_exec (NULL, p_name, get_msec_real_time () - start, PROF_EXEC | (err != NULL ? PROF_ERROR : 0));
+    prof_exec (NULL, p_name, (long) (get_msec_real_time () - start), PROF_EXEC | (err != NULL ? PROF_ERROR : 0));
   if (rc != LTE_OK)
     {
       MAKE_TRX_ERROR (rc, err, LT_ERROR_DETAIL (cli->cli_trx));
@@ -4395,7 +4595,7 @@ http_set_client_address (ws_connection_t * ws)
 void
 ws_read_req (ws_connection_t * ws)
 {
-  char line [10000];
+  char line [HTTP_MAX_REQUEST_LEN];
   timeout_t timeout;
   acl_hit_t * hit = NULL;
   dk_session_t * ses = ws->ws_session;
@@ -4549,19 +4749,23 @@ ws_switch_to_keep_alive (ws_connection_t * ws)
 }
 
 int32 ws_write_timeout = 0;
+int32 ws_read_timeout = 0;
 
-void 
-ws_set_write_timeout (ws_connection_t * ws)
+void
+ws_set_timeouts (ws_connection_t * ws)
 {
   int block = 0;
   dk_session_t * client = ws->ws_session;
-  if (!ws_write_timeout)
+  if (!ws_write_timeout && !ws_read_timeout)
     return;
   client->dks_session->ses_fduplex = 1;
   client->dks_session->ses_w_status = SST_OK;
   client->dks_session->ses_status = SST_OK;
-  client->dks_write_block_timeout.to_sec = ws_write_timeout;
-  session_set_control (client->dks_session, SC_BLOCKING, (void*)&block, sizeof (int));
+  if (ws_read_timeout)
+    client->dks_read_block_timeout.to_sec = ws_read_timeout;
+  if (ws_write_timeout)
+    client->dks_write_block_timeout.to_sec = ws_write_timeout;
+  session_set_control (client->dks_session, SC_BLOCKING, (char *)((void*)&block), sizeof (int));
 }
 
 void
@@ -4576,35 +4780,70 @@ ws_serve_connection (ws_connection_t * ws)
     {
       SSL_CTX * ssl_ctx = ws->ws_ssl_ctx;
       int dst = 0;
-      int ssl_err = 0;
-      timeout_t to = {100, 0};
+      int block = 0, status = 0;
+      timeout_t to = { 20, 0 };
       SSL * new_ssl = NULL;
 
       if (NULL != tcpses_get_ssl (ses->dks_session))
 	sslses_to_tcpses (ses->dks_session);
-      to = ses->dks_read_block_timeout;
-      session_set_control (ses->dks_session, SC_TIMEOUT, (char *)(&to), sizeof (timeout_t));
+      if (ws_read_timeout)
+	to.to_sec = ws_read_timeout;
+#if 0
+      else
+        to = ses->dks_read_block_timeout;
+       session_set_control (ses->dks_session, SC_TIMEOUT, (char *)(&to), sizeof (timeout_t));
+#endif
+      session_set_control (ses->dks_session, SC_BLOCKING, (char *) ((void *) &block), sizeof (int));
       dst = tcpses_get_fd (ses->dks_session);
       new_ssl = SSL_new (ssl_ctx);
       SSL_set_fd (new_ssl, dst);
-      ssl_err = SSL_accept (new_ssl);
-      if (ssl_err == -1)
+      do
 	{
-	  ERR_print_errors_fp (stderr);
-	  SSL_free (new_ssl);
-	  ses->dks_ws_status = DKS_WS_DISCONNECTED;
-	  goto check_state;
+	  int connect_state;
+	  status = SSL_accept (new_ssl);
+	  connect_state = SSL_get_error (new_ssl, status);
+	  switch (connect_state)
+	    {
+	    case SSL_ERROR_NONE:
+	      status = 0;
+	      break;
+	    case SSL_ERROR_WANT_READ:
+	    case SSL_ERROR_WANT_WRITE:
+	      if (SSL_ERROR_NONE == ssl_check_connect_timeout (ses->dks_session, &to, connect_state))
+		{
+		  status = 1;
+		  break;
+		}
+	    default:
+	      {
+		status = 0;
+#ifndef NDEBUG
+		unsigned long err = ERR_get_error ();
+		char err_buf[1024];
+		ERR_error_string_n (err, err_buf, sizeof (err_buf));
+		log_debug ("SSL_accept [%s]", err_buf);
+#endif
+		SSL_free (new_ssl);
+		ses->dks_ws_status = DKS_WS_DISCONNECTED;
+		goto check_state;
+	      }
+	    }
 	}
-      else
+      while (1 == status && !SSL_is_init_finished (new_ssl));
+      SSL_set_verify_result(new_ssl, X509_V_OK);
+      if (!ws_write_timeout && !ws_read_timeout)	/* restore blocking socket if no timeout, old behaviour */
 	{
-	  SSL_set_verify_result(new_ssl, X509_V_OK);
-	  tcpses_to_sslses (ses->dks_session, (void *)(new_ssl));
+	  int rc;
+	  block = 1;
+	  rc = session_set_control (ses->dks_session, SC_BLOCKING, (char *) ((void *) &block), sizeof (int));
+	  rc = session_set_control (ses->dks_session, SC_TIMEOUT, (char *) (&to), sizeof (timeout_t));
 	}
+      tcpses_to_sslses (ses->dks_session, (void *) (new_ssl));
     }
 #endif
 
  next_input:
-  ws_set_write_timeout (ws);
+  ws_set_timeouts (ws);
   ws->ws_cli->cli_http_ses = ws->ws_session;
   ws_read_req (ws);
   try_pipeline = ws_can_try_pipeline (ws);
@@ -4614,8 +4853,7 @@ check_state:
   if (ses->dks_to_close)
     {
       try_pipeline = 0;
-      if (DKS_WS_INPUT_PENDING == ses->dks_ws_status
-	  || DKS_WS_ACCEPTED == ses->dks_ws_status)
+      if (DKS_WS_INPUT_PENDING == ses->dks_ws_status || DKS_WS_ACCEPTED == ses->dks_ws_status)
 	ses->dks_ws_status = DKS_WS_DISCONNECTED; /* this thread owns the connection and will drop it */
     }
 
@@ -4809,7 +5047,7 @@ ws_init_func (ws_connection_t * ws)
 	  /* initialize ws stricture for ssl, pop3, imap, nntp & ftp service */
 	  ws_inet_session_init (ses, ws);
 #endif
-	  ws_set_write_timeout (ws);
+	  ws_set_timeouts (ws);
 	  http_trace (("connect from queue accept ws %p ses %p\n", ws, ws->ws_session));
 	  tws_connections ++;
 	  SESSION_SCH_DATA (ses)->sio_default_read_ready_action = (io_action_func) ws_ready;
@@ -4992,9 +5230,9 @@ ws_keep_alive_ready (dk_session_t * ses)
 void
 http_timeout_keep_alives (int must_kill)
 {
-  long now = get_msec_real_time ();
+  time_msec_t now = get_msec_real_time ();
   long timeout = http_keep_alive_timeout * 1000;
-  long oldest_used = 0;
+  time_msec_t oldest_used = 0;
   dk_session_t * oldest = NULL;
   int n_killed = 0;
   dk_set_t clients = PrpcListPeers ();
@@ -5138,6 +5376,8 @@ http_session_no_catch_arg (caddr_t * qst, state_slot_t ** args, int nth,
   return res;
 }
 
+#define HTTP_URL_ESCAPED 0
+#define HTTP_URL_DECODED 1
 
 caddr_t
 http_path_to_array (char * path, int mode)
@@ -5157,9 +5397,9 @@ http_path_to_array (char * path, int mode)
       if (n_fill > sizeof (name) - 3)
 	break;
       if ((0 == ch || ' ' == ch || '\n' == ch || '\r' == ch || '\t' == ch
-	  || ch == '?') && mode == 0)
+	  || ch == '?') && HTTP_URL_ESCAPED == mode)
 	break;
-      if (0 == ch  && mode == 1)
+      if (0 == ch  && HTTP_URL_DECODED == mode)
 	break;
       if (ch == '/')
 	{
@@ -5169,7 +5409,7 @@ http_path_to_array (char * path, int mode)
 	      n_fill = 0;
 	    }
 	}
-      else if (ch == '%')
+      else if (ch == '%' && HTTP_URL_ESCAPED == mode)
 	{
 	  if (inx >= max || (inx+1) >= max)
 	    {
@@ -5232,12 +5472,15 @@ bif_http_result (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     }
   else if (IS_WIDE_STRING_DTP (dtp))
     {
-      caddr_t err_ret = NULL;
-      char *res = box_cast_to (qst, string, dtp, DV_LONG_STRING, 0, 0, &err_ret);
-      if (!err_ret)
-        session_buffered_write (out, res, box_length (res) - 1);
+      caddr_t err = NULL;
+      char *res = box_cast_to (qst, string, dtp, DV_LONG_STRING, 0, 0, &err);
+      if (!err)
+	session_buffered_write (out, res, box_length (res) - 1);
       else
-	sqlr_new_error ("22023", "HT007", "Incorrect wide string passed to http");
+	{
+	  dk_free_tree (err);
+	  sqlr_new_error ("22023", "HT007", "Incorrect wide string passed to http");
+	}
       dk_free_box (res);
     }
   else
@@ -5277,7 +5520,9 @@ void
 dks_sqlval_esc_write (caddr_t *qst, dk_session_t *out, caddr_t val, wcharset_t *tgt_charset, wcharset_t *src_charset, int dks_esc_mode)
 {
   query_instance_t * qi = (query_instance_t *) qst;
-  dtp_t dtp = DV_TYPE_OF (val);
+  dtp_t dtp;
+again:
+  dtp = DV_TYPE_OF (val);
   if (DV_STRINGP (val))
     {
       ws_connection_t * ws = qi->qi_client && qi->qi_client->cli_ws ? qi->qi_client->cli_ws : NULL;
@@ -5317,6 +5562,17 @@ dks_sqlval_esc_write (caddr_t *qst, dk_session_t *out, caddr_t val, wcharset_t *
   else if (DV_DB_NULL == dtp)
     {
       ; /* do nothing */
+    }
+  else if (DV_RDF == dtp)
+    {
+      rdf_box_t *rb = (rdf_box_t *)val;
+      if (!rb->rb_is_complete)
+        rb_complete (rb, qi->qi_trx, qi);
+      val = rb->rb_box;
+      /* strings in RDF all are expected to be UTF8 */
+      if (DV_STRINGP (val))
+        box_flags (val) = (box_flags (val) | BF_UTF8);
+      goto again;
     }
   else
     {
@@ -5395,7 +5651,7 @@ bif_http_uri (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 caddr_t
 bif_http_dav_url (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  return (bif_http_value_1 (qst, err_ret, args, "http_dav_url", DKS_ESC_DAV));
+  return (bif_http_value_1 (qst, err_ret, args, "http_dav_url", DKS_ESC_URI_NRES));
 }
 
 caddr_t
@@ -5513,7 +5769,7 @@ bif_http_host (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 void
 ws_lt_trace (lock_trx_t * lt)
 {
-  static char * fname = "http_trace.txt";
+  static const char * fname = "http_trace.txt";
   dk_session_t * ses;
   int to_read, fd = -1;
   char buffer[4096];
@@ -5590,8 +5846,8 @@ bif_http_pending_req (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return ((caddr_t) list_to_array (dk_set_nreverse (set)));
 }
 
-static void
-http_kill_all ()
+void
+http_kill_all (void)
 {
   dk_set_t killed = NULL;
   ws_connection_t * ws;
@@ -5714,7 +5970,7 @@ bif_http_limited (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   IN_TXN;
   DO_SET (lock_trx_t *, lt, &all_trxs)
     {
-      if ((lt->lt_threads > 0 || lt_has_locks (lt)) && lt->lt_client && !lt->lt_client->cli_terminate_requested && 
+      if ((lt->lt_threads > 0 || lt_has_locks (lt)) && lt->lt_client && !lt->lt_client->cli_terminate_requested &&
 	  lt->lt_client->cli_ws && lt->lt_client->cli_ws->ws_limited)
 	limited ++;
     }
@@ -5787,6 +6043,17 @@ bif_http_request_status_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** a
   return NEW_DB_NULL;
 }
 
+static caddr_t
+bif_http_request_status_code_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  query_instance_t * qi = (query_instance_t *) qst;
+  if (!qi->qi_client->cli_ws)
+    sqlr_new_error ("42000", "HT012", "The http_request_status_code_get function allowed only inside HTTP request");
+  if (qi->qi_client->cli_ws->ws_status_line)
+    return box_num (qi->qi_client->cli_ws->ws_status_code);
+  return NEW_DB_NULL;
+}
+
 caddr_t
 bif_http_root (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
@@ -5849,9 +6116,9 @@ bif_http_internal_redirect (caddr_t * qst, caddr_t * err_ret, state_slot_t ** ar
 	ws->ws_redirect_from = ws->ws_path_string;
       else
 	dk_free_tree (ws->ws_path_string);
-      dk_free_tree (ws->ws_path);
+      dk_free_tree ((caddr_t)(ws->ws_path));
       ws->ws_path_string = box_copy (new_path);
-      parr = (caddr_t *) http_path_to_array (new_path, 1);
+      parr = (caddr_t *) http_path_to_array (new_path, HTTP_URL_DECODED);
       ws->ws_path = ((NULL != parr) ? parr : (caddr_t *) list(0));
     }
 
@@ -5862,9 +6129,9 @@ bif_http_internal_redirect (caddr_t * qst, caddr_t * err_ret, state_slot_t ** ar
   if (new_phy_path != NULL)
     {
       dk_free_tree (ws->ws_p_path_string);
-      dk_free_tree (ws->ws_p_path);
+      dk_free_tree ((caddr_t)(ws->ws_p_path));
       ws->ws_p_path_string = box_copy (new_phy_path);
-      parr = (caddr_t *) http_path_to_array (new_phy_path, 1);
+      parr = (caddr_t *) http_path_to_array (new_phy_path, HTTP_URL_DECODED);
       ws->ws_p_path = ((NULL != parr) ? parr : (caddr_t *) list(0));
       ws->ws_proxy_request = (ws->ws_p_path_string ? (0 == strnicmp (ws->ws_p_path_string, "http://", 7)) : 0);
     }
@@ -5955,7 +6222,7 @@ http_cached_session (char * host)
 void
 remove_old_cached_sessions (void)
 {
-  long now = get_msec_real_time ();
+  time_msec_t now = get_msec_real_time ();
   if (!ws_proxy_cache)
     return;
   http_trace (("------ HTTP PROXY CACHED SESSIONS -----\n"));
@@ -6049,7 +6316,7 @@ http_write_req (dk_session_t * ses, char * host, caddr_t * head, caddr_t * body,
   volatile long new_len = -1;
   char http_11_head [2048];
   int is_mp = body && BOX_ELEMENTS(body) > 0  && (0 == strcmp (body[0], "multipart"));
-  char *szContentType = NULL;
+  const char *szContentType = NULL;
   volatile int url_enc = 1;
   char *proto = NULL;
 
@@ -6298,7 +6565,7 @@ http_proxy (ws_connection_t * ws, char * host, caddr_t * req, caddr_t * body, dk
     close = 1;
   else
     {
-      char * connection = ws_header_field (head, "Connection:", "");
+      const char * connection = ws_header_field (head, "Connection:", "");
       while (*connection && *connection <= '\x20')
 	connection++;
       close = 1;
@@ -6306,7 +6573,7 @@ http_proxy (ws_connection_t * ws, char * host, caddr_t * req, caddr_t * body, dk
 	close = 1;
       if (0 == strnicmp (connection, "Keep-Alive", 10))
 	{
-	  char * keep_alive;
+	  const char * keep_alive;
 	  close = 0;
 	  keep_alive = ws_header_field (head, "Keep-Alive:", "");
 	  while (*keep_alive && *keep_alive <= '\x20')
@@ -6450,7 +6717,7 @@ encode_base64_impl (char * input, char * output, size_t len, char * table)
       n = 1;
       count += 4;
       val = c;
-      if (count >= 70)
+      if (count >= 70 && table != &base64url_vec[0])
 	{
 	  output[x++] = '\r';
 	  output[x++] = '\n';
@@ -6498,12 +6765,8 @@ bif_encode_base64(caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   caddr_t dest;
   caddr_t res;
-  caddr_t src = bif_string_arg (qst, args, 0, ENC_B64_NAME);
-  dtp_t dtp = DV_TYPE_OF (src);
-  size_t len = box_length(src);
-
-  if (IS_STRING_DTP(dtp) || dtp == DV_C_STRING)
-    len--;
+  int len;
+  caddr_t src = bif_string_or_bin_arg (qst, args, 0, ENC_B64_NAME, &len);
 
   if ((len * 2 + 1) > MAX_BOX_LENGTH)
     sqlr_new_error ("22023", "HT081", "The input string is too large");
@@ -6522,12 +6785,8 @@ bif_encode_base64url(caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   caddr_t dest;
   caddr_t res;
-  caddr_t src = bif_string_arg (qst, args, 0, ENC_B64_NAME);
-  dtp_t dtp = DV_TYPE_OF (src);
-  size_t len = box_length(src);
-
-  if (IS_STRING_DTP(dtp) || dtp == DV_C_STRING)
-    len--;
+  int len;
+  caddr_t src = bif_string_or_bin_arg (qst, args, 0, ENC_B64_NAME, &len);
 
   if ((len * 2 + 1) > MAX_BOX_LENGTH)
     sqlr_new_error ("22023", "HT081", "The input string is too large");
@@ -6552,36 +6811,52 @@ base64_store24(char ** d, char * c)
 size_t
 decode_base64_impl (char * src, char * end, char * table)
 {
-    char * start = src;
-    char c0, c[4], *p;
-    size_t i=0;
-    char *d=src;
-    if (!src || !*src || src == end)
-      return 0;
-    while ((c0 = *src++) && src < end) {
-	if (c0=='=')
-	  break; /* a = symbol is end padding */
-	if ((p=strchr(table, c0))) {
-	  c[i++]=(char) (p-table);
-	  if (i==4) {
-	    base64_store24(&d, c);
-	    i=0;
-	  }
-       } /* unknown symbols are ignored */
+  char * start = src;
+  char c0, c[4], s[4], *p;
+  size_t i = 0;
+  char *d = src;
+  if (!src || !*src || src == end)
+    return 0;
+  memset (s, 0, sizeof (s));
+  while ((c0 = *src++) && src < end)
+    {
+      if ((p = strchr(table, c0)))
+        {
+          s[i] = c0;
+          c[i]= (char) (p - table);
+          if (i == 3)
+            {
+              base64_store24(&d, c);
+              if (s[2] == '=')
+                {
+                  d -= 2;
+                  i = 0;
+                  break;
+                }
+              else if (s[3] == '=')
+                {
+                  d -= 1;
+                  i = 0;
+                  break;
+                }
+              memset (s, 0, sizeof (s));
+              i = 0;
+            }
+          else
+            {
+              i ++;
+            }
+        } /* unknown symbols are ignored */
     }
-    if (i>0) {
-	for(;i<4;c[i++]=0)
-	  ; /* will leave padding nulls - does not matter here */
-       base64_store24(&d, c);
+  if (i > 0)
+    {
+      for(; i < 4; c[i++] = 0);
+      base64_store24(&d, c);
+      for (i = 0; i < 4; i ++)
+        if ('\0' == s[i]) d--;
     }
-    *d=0;
-    if (*(d - 1) == 0) {
-      if (*(d - 2) == 0)
-	d -= 2;
-      else
-	d -= 1;
-    }
-    return (d - start);
+  *d = 0;
+  return (d - start);
 }
 
 caddr_t
@@ -6865,8 +7140,8 @@ ws_content_length (caddr_t * head)
 }
 
 
-char *
-ws_header_field (caddr_t * head, const char * f, char * deflt)
+const char *
+ws_header_field (caddr_t * head, const char * f, const char * deflt)
 {
   int inx;
   DO_BOX (caddr_t, line, inx, head)
@@ -6880,7 +7155,7 @@ ws_header_field (caddr_t * head, const char * f, char * deflt)
 
 
 caddr_t
-ws_mime_header_field (caddr_t * head, char * f, char *subf, int initial_mode)
+ws_mime_header_field (caddr_t * head, const char * f, const char *subf, int initial_mode)
 {
   int inx;
   dk_session_t *ses = NULL;
@@ -7121,7 +7396,7 @@ http_client_cache_get (query_instance_t * qi, caddr_t url, caddr_t header, caddr
 	  if (BOX_ELEMENTS (args) > arg_pos && ssl_is_settable (args[arg_pos]))
 	    {
 	      caddr_t * head = (caddr_t *) lc_nth_col (lc, 0);
-	      qst_set ((caddr_t *) qi, args[arg_pos], box_copy_tree (head));
+	      qst_set ((caddr_t *) qi, args[arg_pos], box_copy_tree ((caddr_t)head));
 	    }
 	  if (IS_BLOB_HANDLE_DTP (dtp))
 	    {
@@ -7167,7 +7442,7 @@ http_client_cache_register (query_instance_t * qi, caddr_t url, caddr_t header, 
     }
   err = qr_rec_exec (qr, qi->qi_client, NULL, qi, NULL, 4,
       ":0", url, QRP_STR,
-      ":1", box_copy_tree (head), QRP_RAW,
+      ":1", box_copy_tree ((caddr_t)head), QRP_RAW,
       ":2", body, QRP_STR,
       ":3", http_client_cache_hash (header, req_body), QRP_RAW);
 
@@ -7204,10 +7479,10 @@ bif_http_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   caddr_t header = NULL;
   caddr_t body = NULL;
   caddr_t volatile proxy = NULL;
-  char * trf_enc = NULL;
-  char * cont_enc = NULL;
+  const char * trf_enc = NULL;
+  const char * cont_enc = NULL;
   int resp_code = 0, no_body = 0;
-  char * code_pos = NULL;
+  const char * code_pos = NULL;
 #ifdef _USE_CACHED_SES
   volatile int close = 1;
   char host[1000];
@@ -7380,7 +7655,7 @@ bif_http_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	close = 1;
       else
 	{
-	  char * connection = ws_header_field (head, "Connection:", "");
+	  const char * connection = ws_header_field (head, "Connection:", "");
 	  while (*connection && *connection <= '\x20')
 	    connection++;
 	  close = 0;
@@ -7388,7 +7663,7 @@ bif_http_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	    close = 1;
 	  if (0 == strnicmp (connection, "Keep-Alive", 10))
 	    {
-	      char * keep_alive;
+	      const char * keep_alive;
 	      close = 0;
 	      keep_alive = ws_header_field (head, "Keep-Alive:", "");
 	      while (*keep_alive && *keep_alive <= '\x20')
@@ -7463,8 +7738,8 @@ bif_string_output (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 caddr_t
 bif_string_output_flush (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  caddr_t strses = bif_strses_arg (qst, args, 0, "string_output_flush");
-  strses_flush ((dk_session_t *) strses);
+  dk_session_t *strses = bif_strses_arg (qst, args, 0, "string_output_flush");
+  strses_flush (strses);
   return (NULL);
 }
 
@@ -7484,8 +7759,8 @@ bif_http_output_flush (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 caddr_t
 bif_string_output_string (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  caddr_t strses = bif_strses_arg (qst, args, 0, "string_output_string");
-  if (!STRSES_CAN_BE_STRING ((dk_session_t *) strses))
+  dk_session_t *strses = bif_strses_arg (qst, args, 0, "string_output_string");
+  if (!STRSES_CAN_BE_STRING (strses))
     {
       *err_ret = STRSES_LENGTH_ERROR ("string_output_string");
       return NULL;
@@ -7708,7 +7983,7 @@ bif_http_request_header (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 caddr_t
 bif_http_request_header_full (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  char * szMe = "http_request_header_full";
+  const char * szMe = "http_request_header_full";
   query_instance_t * qi = (query_instance_t *) qst;
   int n_args = BOX_ELEMENTS (args);
   caddr_t *lines = (caddr_t *) ((n_args > 0) ?   bif_array_arg (qst, args, 0, szMe) : NULL);
@@ -7724,7 +7999,7 @@ bif_http_request_header_full (caddr_t * qst, caddr_t * err_ret, state_slot_t ** 
     }
   else
     {
-      if (lines)
+      if (lines && name)
 	{
 	  int inx;
 	  size_t len;
@@ -7794,7 +8069,7 @@ caddr_t
 bif_http_set_params (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   query_instance_t * qi = (query_instance_t *) qst;
-  char * pars = bif_arg (qst, args, 0, "http_set_params");
+  caddr_t *pars = (caddr_t *)bif_arg (qst, args, 0, "http_set_params");
   if (qi->qi_client->cli_ws)
     {
       int n_pars;
@@ -7803,8 +8078,8 @@ bif_http_set_params (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
       n_pars = BOX_ELEMENTS (pars);
       if (0 != (n_pars % 2))
 	sqlr_new_error ("22023", "HTXXX", "A name value pairs are expected as parameter");
-      dk_free_tree (qi->qi_client->cli_ws->ws_params);
-      qi->qi_client->cli_ws->ws_params = box_copy_tree (pars);
+      dk_free_tree ((caddr_t)(qi->qi_client->cli_ws->ws_params));
+      qi->qi_client->cli_ws->ws_params = (caddr_t *)box_copy_tree ((caddr_t)pars);
     }
   return NULL;
 }
@@ -8035,10 +8310,13 @@ bif_http_xslt (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
   query_instance_t * qi = (query_instance_t *) qst;
   ws_connection_t *ws = qi->qi_client->cli_ws;
   caddr_t xslt_url = bif_string_or_null_arg (qst, args, 0, "http_xslt");
-  caddr_t params = NULL;
+  caddr_t params = NULL, base = NULL;
 
   if (BOX_ELEMENTS (args) > 1)
     params = bif_array_or_null_arg (qst, args, 1, "http_xslt");
+
+  if (BOX_ELEMENTS (args) > 2)
+    base = bif_string_or_null_arg (qst, args, 2, "http_xslt");
 
   if (!ws)
     sqlr_new_error ("42000", "HT039", "Not allowed to call the http_xslt in an non VSP context");
@@ -8047,6 +8325,8 @@ bif_http_xslt (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
   ws->ws_xslt_url = xslt_url ? box_dv_short_string (xslt_url) : NULL;
   dk_free_tree (ws->ws_xslt_params);
   ws->ws_xslt_params = box_copy_tree (params);
+  dk_free_box (ws->ws_xslt_doc_url);
+  ws->ws_xslt_doc_url = box_copy(base);
 #endif
   return NULL;
 }
@@ -8156,7 +8436,7 @@ char * ws_def_1 =
 "  return 1; \n"
 "}";
 
-char * ws_def_2_name = "WS.WS.DEFAULT";
+const char * ws_def_2_name = "WS.WS.DEFAULT";
 
 char * ws_def_2 =
 "create procedure WS.WS.\"DEFAULT\" (in path varchar, in params varchar, inout lines varchar)\n"
@@ -8505,6 +8785,92 @@ http_virtual_host_normalize (caddr_t _host, caddr_t lhost)
   return host1;
 }
 
+/* can be or-ed with SSL_VERIFY_CLIENT_ONCE but renegotiaton will fail*/
+#define HTTPS_SET_OPENSSL_VERIFY_FLAGS(verify,flag) \
+      switch (flag) \
+        { \
+          case HTTPS_VERIFY_REQUIRED: \
+          case HTTPS_VERIFY_REQUIRED_LAX: \
+              verify = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT; \
+              break; \
+          case HTTPS_VERIFY_OPTIONAL: \
+          case HTTPS_VERIFY_OPTIONAL_NO_CA: \
+              verify = SSL_VERIFY_PEER; \
+              break; \
+          default: \
+              verify = SSL_VERIFY_NONE; \
+        }
+
+static id_hash_t *
+http_map_fill_cors_allow_headers (caddr_t option_value)
+{
+  dk_set_t set = NULL;
+  id_hash_t * ht = NULL;
+  ptrlong one = 1, two = 2;
+
+  split_string (option_value, ", ", &set);
+
+  if (NULL == set)
+    return NULL;
+
+  DO_SET (caddr_t, h, &set)
+    {
+      if (0 == strcmp (h, "*")) /* allow everything incl. custom headers, same as no rules at all */
+        {
+          if (NULL != ht)
+            id_hash_free (ht);
+          ht = NULL;
+          dk_free_tree (list_to_array (dk_set_nreverse (set)));
+          return NULL;
+        }
+      if (NULL == ht)
+        ht = id_strcase_hash_create (7);
+      if (h[0] != '!' || 0 == stricmp (h, "!ALL")) /* expilicitly added header, or all custom disabled */
+        id_hash_set (ht, (caddr_t) &h, (caddr_t) &one);
+      else /* explicitly denied header */
+        {
+          caddr_t he = box_dv_short_string (h+1);
+          id_hash_set (ht, (caddr_t) &he, (caddr_t) &two);
+        }
+    }
+  END_DO_SET();
+
+  /* default allowed headers, except if denied explicitly, see above */
+  DO_SET (caddr_t, h, &http_default_allow_headers_list)
+    {
+      ptrlong * flag = (ptrlong *) id_hash_get (ht, (caddr_t) &h);
+      if (flag && 2 == flag[0])
+        continue;
+      id_hash_set (ht, (caddr_t) &h, (caddr_t) &one);
+    }
+  END_DO_SET();
+
+  dk_set_free (set);
+  return ht;
+}
+
+static dk_set_t
+http_map_fill_cors_origins (caddr_t option_value)
+{
+  caddr_t * orgs = ws_split_cors (option_value);
+  dk_set_t set = NULL;
+  if (orgs)
+    {
+      if (orgs != WS_CORS_STAR)
+        {
+          int inx;
+          DO_BOX (caddr_t, org, inx, orgs)
+            {
+              dk_set_push (&set, org);
+            }
+          END_DO_BOX;
+        }
+      else
+        set = (dk_set_t) orgs;
+    }
+  return set;
+}
+
 
 /*##********************************************************
 * Add entry in HTTP virtual directories map hash
@@ -8622,8 +8988,25 @@ bif_http_map_table (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     }
   if (nargs > 15)
     { /* Authentication function options */
+      int inx, verify, verify_depth, https_client_verify = HTTPS_VERIFY_NONE;
       caddr_t * opts = (caddr_t *) bif_array_or_null_arg (qst, args, 15, "http_map_table");
       map->hm_auth_opts =  (caddr_t *) box_copy_tree ((box_t) opts);
+#ifdef _SSL
+      /* these are used only when enable_https_vd_renegotiate is on */
+      map->hm_ssl_verify_mode = verify = SSL_VERIFY_NONE;
+      verify_depth = 15;
+      DO_BOX_FAST_STEP2 (caddr_t, op, caddr_t, v, inx, opts)
+	{
+	  if (DV_STRINGP (op) && !strcmp (op, "https_verify"))
+            https_client_verify = unbox (v);
+	  else if (DV_STRINGP (op) && !strcmp (op, "https_cv_depth"))
+	    verify_depth = unbox (v);
+	}
+      END_DO_BOX;
+      HTTPS_SET_OPENSSL_VERIFY_FLAGS (verify, https_client_verify);
+      map->hm_ssl_verify_mode = verify;
+      map->hm_ssl_verify_ap = ((0xff & https_client_verify) << 24) | (0xffffff & verify_depth);
+#endif
     }
   if (nargs > 16)
     { /* Global options */
@@ -8633,44 +9016,34 @@ bif_http_map_table (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	  int i, nelm = BOX_ELEMENTS (opts);
 	  for (i = 0; i < nelm && ((nelm % 2) == 0); i+=2)
 	    {
-	      if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"noinherit"))
+              caddr_t option_name = opts[i];
+              caddr_t option_value = opts[i+1];
+
+              if (!DV_STRINGP(option_name))
+                continue;
+
+	      if (!stricmp (option_name,"noinherit"))
 		map->hm_no_inherit = 1;
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"xml_templates"))
+	      else if (!stricmp (option_name,"xml_templates"))
 		map->hm_xml_template = 1;
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"executable"))
+	      else if (!stricmp (option_name,"executable"))
 		map->hm_executable = 1;
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"exec_as_get"))
+	      else if (!stricmp (option_name,"exec_as_get"))
 		map->hm_exec_as_get = 1;
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"url_rewrite"))
-		map->hm_url_rewrite_rule = box_copy_tree (opts[i+1]);
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"url_rewrite_keep_lpath"))
-		map->hm_url_rewrite_keep_lpath = unbox (opts[i+1]);
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"cors_restricted"))
-		map->hm_cors_restricted = unbox (opts[i+1]);
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"cors"))
-		{
-		  caddr_t * orgs = ws_split_cors (opts[i+1]);
-		  id_hash_t * ht = NULL;
-		  if (orgs)
-		    {
-		      if (orgs != WS_CORS_STAR)
-			{
-			  int inx;
-			  ptrlong one = 1;
-			  ht = id_str_hash_create (7);
-			  DO_BOX (caddr_t, org, inx, orgs)
-			    {
-			      id_hash_set (ht, (caddr_t) & org, (caddr_t) & one);
-			    }
-			  END_DO_BOX;
-			}
-		      else
-			ht = (id_hash_t *) orgs;
-		    }
-		  map->hm_cors = ht;
-		}
-	      else if (DV_STRINGP (opts[i]) && !stricmp (opts[i],"expiration_function"))
-		map->hm_expiration_fn = box_copy_tree (opts[i+1]);
+	      else if (!stricmp (option_name,"http_options_no_exec"))
+		map->hm_exec_opts = 1;
+	      else if (!stricmp (option_name,"url_rewrite"))
+		map->hm_url_rewrite_rule = box_copy_tree (option_value);
+	      else if (!stricmp (option_name,"url_rewrite_keep_lpath"))
+		map->hm_url_rewrite_keep_lpath = unbox (option_value);
+	      else if (!stricmp (option_name,"cors_restricted"))
+		map->hm_cors_restricted = unbox (option_value);
+	      else if (!stricmp (option_name,"cors"))
+                map->hm_cors = http_map_fill_cors_origins (option_value);
+	      else if (!stricmp (option_name,"cors_allow_headers"))
+                map->hm_cors_allow_headers = http_map_fill_cors_allow_headers (option_value);
+	      else if (!stricmp (option_name,"expiration_function"))
+		map->hm_expiration_fn = box_copy_tree (option_value);
 	    }
 	  map->hm_opts = (caddr_t *) box_copy_tree ((box_t) opts);
 	}
@@ -8726,53 +9099,54 @@ bif_http_map_del (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return (box_num (0));
 }
 
+
 #ifdef _SSL
+
+#define HTTPS_CHECK_VERIFY(errnum,verify,ssl,ok) \
+  switch (errnum) \
+    { \
+      case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT: \
+      case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN: \
+      case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY: \
+      case X509_V_ERR_CERT_UNTRUSTED: \
+      case X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE: \
+          if (HTTPS_VERIFY_OPTIONAL_NO_CA == verify || HTTPS_VERIFY_REQUIRED_LAX == verify) \
+            { \
+              SSL_set_verify_result(ssl, X509_V_OK); \
+              ok = 1; \
+              break; \
+            } \
+    }
+
 int
-https_cert_verify_callback (int ok, X509_STORE_CTX *x509_store)
+https_ssl_ctx_verify_callback (int ok, X509_STORE_CTX *x509_store)
 {
   SSL *ssl;
-  X509 *xs;
+  SSL_CTX *ssl_ctx;
   int errnum, verify, depth;
   int errdepth;
-  char *cp, cp_buf[1024];
-  char *cp2, cp2_buf[1024];
-  SSL_CTX *ssl_ctx;
   uptrlong ap;
 
   ssl = (SSL *) X509_STORE_CTX_get_ex_data(x509_store, SSL_get_ex_data_X509_STORE_CTX_idx());
   ssl_ctx = SSL_get_SSL_CTX (ssl);
   ap = (uptrlong) SSL_CTX_get_ex_data (ssl_ctx, 0);
 
-  xs       = X509_STORE_CTX_get_current_cert(x509_store);
   errnum   = X509_STORE_CTX_get_error(x509_store);
   errdepth = X509_STORE_CTX_get_error_depth(x509_store);
-
-  cp = X509_NAME_oneline (X509_get_subject_name (xs), cp_buf, sizeof (cp_buf));
-  cp2 = X509_NAME_oneline (X509_get_issuer_name (xs), cp2_buf, sizeof (cp2_buf));
-
   verify = (int) ((0xff000000 & ap) >> 24);
   depth = (int) (0xffffff & ap);
-
-  if ((errnum == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT
-	|| errnum == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
-	|| errnum == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
-	  || errnum == X509_V_ERR_CERT_UNTRUSTED
-	|| errnum == X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE)
-      && verify == HTTPS_VERIFY_OPTIONAL_NO_CA )
-    {
-      SSL_set_verify_result (ssl, X509_V_OK);
-      ok = 1;
-    }
-
+  HTTPS_CHECK_VERIFY (errnum, verify, ssl, ok);
   if (!ok)
     {
-      log_error ("HTTPS Certificate Verification: Error (%d): %s",
-	  errnum, X509_verify_cert_error_string(errnum));
+      /*
+       * The http(s) verification errors in production should not be logged, these are more for debugging.
+       * Otherwise we can be intentionally flooded with bad errors in the log
+       */
+      log_debug ("HTTPS Certificate Verification: Error (%d): %s", errnum, X509_verify_cert_error_string(errnum));
     }
-
   if (errdepth > depth)
     {
-      log_error ("HTTPS Certificate Verification: Certificate Chain too long "
+      log_debug ("HTTPS Certificate Verification: Certificate Chain too long "
 	  "(chain has %d certificates, but maximum allowed are only %ld)",
 	  errdepth, depth);
       ok = 0;
@@ -8784,47 +9158,26 @@ int
 https_ssl_verify_callback (int ok, X509_STORE_CTX *x509_store)
 {
   SSL *ssl;
-  X509 *xs;
   int errnum, verify, depth;
   int errdepth;
-  char *cp, cp_buf[1024];
-  char *cp2, cp2_buf[1024];
   uptrlong ap;
 
   ssl = (SSL *) X509_STORE_CTX_get_ex_data(x509_store, SSL_get_ex_data_X509_STORE_CTX_idx());
-
   ap = (uptrlong) SSL_get_ex_data (ssl, 0);
-
-  xs       = X509_STORE_CTX_get_current_cert(x509_store);
   errnum   = X509_STORE_CTX_get_error(x509_store);
   errdepth = X509_STORE_CTX_get_error_depth(x509_store);
 
-  cp  = X509_NAME_oneline(X509_get_subject_name(xs), cp_buf, sizeof (cp_buf));
-  cp2 = X509_NAME_oneline(X509_get_issuer_name(xs),  cp2_buf, sizeof (cp2_buf));
-
   verify = (int) ((0xff000000 & ap) >> 24);
   depth =  (int) (0xffffff & ap);
-
-  if (( errnum == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT
-	|| errnum == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
-	|| errnum == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
-	|| errnum == X509_V_ERR_CERT_UNTRUSTED
-	|| errnum == X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE)
-      && verify == HTTPS_VERIFY_OPTIONAL_NO_CA )
-    {
-      SSL_set_verify_result(ssl, X509_V_OK);
-      ok = 1;
-    }
-
+  HTTPS_CHECK_VERIFY (errnum, verify, ssl, ok);
   if (!ok)
     {
-      log_error ("HTTPS Certificate Verification: Error (%d): %s",
+      log_debug ("HTTPS Certificate Verification: Error (%d): %s",
 	  errnum, X509_verify_cert_error_string(errnum));
     }
-
   if (errdepth > depth)
     {
-      log_error ("HTTPS Certificate Verification: Certificate Chain too long "
+      log_debug ("HTTPS Certificate Verification: Certificate Chain too long "
 	  "(chain has %d certificates, but maximum allowed are only %ld)",
 	  errdepth, depth);
       ok = 0;
@@ -8838,6 +9191,12 @@ ssl_server_set_certificate (SSL_CTX* ssl_ctx, char * cert_name, char * key_name,
   char err_buf[1024];
   EVP_PKEY *pkey;
   X509 *x509;
+
+  if (!cert_name || !key_name)
+    {
+      log_error ("SSL: The certificate and private key are not specified");
+      return 0;
+    }
 
   /* TODO create internal OpenSSL engine for this */
   if (strstr (cert_name, "db:") == cert_name || strstr (key_name, "db:") == key_name)
@@ -8952,13 +9311,51 @@ ssl_server_set_certificate (SSL_CTX* ssl_ctx, char * cert_name, char * key_name,
   return 1;
 }
 
+static int
+https_ssl_ctx_set_dhparam (SSL_CTX * ctx, char * dhparam)
+{
+  char err_buf [1024];
+  if (dhparam && strstr (dhparam, "db:") == dhparam)
+    {
+      xenc_key_t * k;
+      client_connection_t * cli = GET_IMMEDIATE_CLIENT_OR_NULL;
+      user_t * saved_user;
+      if (!cli)
+	{
+	  log_error ("SSL: The DH param stored in the database cannot be accessed");
+          goto err_exit;
+	}
+      saved_user = cli->cli_user;
+      if (!cli->cli_user)
+	cli->cli_user = sec_name_to_user ("dba");
+      k = xenc_get_key_by_name (dhparam + 3, 1);
+      cli->cli_user = saved_user;
+      if (!k || k->xek_type != DSIG_KEY_DH)
+	{
+	  log_error ("SSL: The stored DH param '%s' is invalid", dhparam);
+          goto err_exit;
+	}
+      SSL_CTX_set_options (ctx, SSL_OP_SINGLE_DH_USE);
+      SSL_CTX_set_tmp_dh (ctx, k->xek_dh);
+    }
+  else if (!ssl_ctx_set_dhparam (ctx, dhparam))
+    {
+      cli_ssl_get_error_string (err_buf, sizeof (err_buf));
+      log_error ("HTTPS: Error setting SSL DH param [%s]: %s", dhparam, err_buf);
+      goto err_exit;
+    }
+  return 1;
+err_exit:
+  return 0;
+}
+
 int
 http_set_ssl_listen (dk_session_t * listening, caddr_t * https_opts)
 {
   char err_buf[1024];
   SSL_CTX *ssl_ctx = NULL;
   const SSL_METHOD *ssl_meth = NULL;
-  char *https_cvfile = NULL;
+  char * https_cvfile = https_client_verify_file;
   char *cert = NULL, *extra = NULL;
   char *skey = NULL;
   char *ciphers = https_cipher_list;
@@ -9036,12 +9433,8 @@ http_set_ssl_listen (dk_session_t * listening, caddr_t * https_opts)
       goto err_exit;
     }
 
-  if (!ssl_ctx_set_dhparam (ssl_ctx, dhparam))
-    {
-      cli_ssl_get_error_string (err_buf, sizeof (err_buf));
-      log_error ("HTTPS: Error setting SSL DH param [%s]: %s", dhparam, err_buf);
-      goto err_exit;
-    }
+  if (!https_ssl_ctx_set_dhparam (ssl_ctx, dhparam))
+    goto err_exit;
 
   if (!ssl_ctx_set_ecdh_curve (ssl_ctx, curve))
     {
@@ -9053,43 +9446,32 @@ http_set_ssl_listen (dk_session_t * listening, caddr_t * https_opts)
   if (!ssl_server_set_certificate (ssl_ctx, cert, skey, extra))
     goto err_exit;
 
-  if (https_cvfile)
-    {
-      if (!SSL_CTX_load_verify_locations (ssl_ctx, https_cvfile, NULL))
-	{
-	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
-	  log_error ("HTTPS: Invalid X509 client CA file %s : %s", https_cvfile, err_buf);
-	  goto err_exit;
-	}
-    }
+  xenc_load_verify_CA_list (ssl_ctx, https_cvfile);
 
   if (https_client_verify > 0)
     {
       int verify = SSL_VERIFY_NONE, session_id_context = srv_pid;
       uptrlong ap;
 
-      if (HTTPS_VERIFY_REQUIRED == https_client_verify)
-	verify |= SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT | SSL_VERIFY_CLIENT_ONCE;
-      if (HTTPS_VERIFY_OPTIONAL == https_client_verify || HTTPS_VERIFY_OPTIONAL_NO_CA == https_client_verify)
-	verify |= SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
-      SSL_CTX_set_verify (ssl_ctx, verify, https_cert_verify_callback);
+      HTTPS_SET_OPENSSL_VERIFY_FLAGS (verify, https_client_verify);
+      SSL_CTX_set_verify (ssl_ctx, verify, https_ssl_ctx_verify_callback);
       SSL_CTX_set_verify_depth (ssl_ctx, https_cvdepth);
       ap = ((0xff & https_client_verify) << 24) | (0xffffff & https_cvdepth);
       SSL_CTX_set_ex_data (ssl_ctx, 0, (void *) ap);
       SSL_CTX_set_session_id_context (ssl_ctx, (unsigned char *) &session_id_context, sizeof session_id_context);
     }
 
-  if (https_cvfile)
+  if (https_cvfile && HTTPS_VERIFY_REQUIRED == https_client_verify)
     {
       int i = 0;
-      STACK_OF (X509_NAME) * skCAList = SSL_load_client_CA_file (https_cvfile);
+      STACK_OF(X509_NAME) *skCAList = xenc_CA_names_stack (https_cvfile);
 
       SSL_CTX_set_client_CA_list (ssl_ctx, skCAList);
       skCAList = SSL_CTX_get_client_CA_list (ssl_ctx);
 
       if (sk_X509_NAME_num (skCAList) == 0)
 	log_warning ("HTTPS: Client authentication requested but no CA known for verification");
-
+#if 0
       for (i = 0; i < sk_X509_NAME_num (skCAList); i++)
 	{
 	  char ca_buf[1024];
@@ -9097,6 +9479,7 @@ http_set_ssl_listen (dk_session_t * listening, caddr_t * https_opts)
 	  if (X509_NAME_oneline (ca_name, ca_buf, sizeof (ca_buf)))
 	    log_debug ("HTTPS: Using X509 Client CA %s", ca_buf);
 	}
+#endif
     }
   tcpses_set_sslctx (listening->dks_session, (void *) ssl_ctx);
   return 1;
@@ -9139,6 +9522,7 @@ http_listen (char * host, caddr_t * https_opts)
       log_error ("Failed HTTP listen at %s code (%d).", host, rc);
       goto err_exit;
     };
+  log_info ("HTTP%s server online at %s", https_opts ? "S" : "", host);
   PrpcCheckIn (listening);
   return listening;
 
@@ -9164,7 +9548,7 @@ bif_http_listen_host (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   caddr_t host = http_host_normalize (bif_string_arg (qst, args, 0, "http_listen_host"), 0);
   ptrlong stop = bif_long_arg (qst, args, 1, "http_listen_host");
   caddr_t * https_opts = BOX_ELEMENTS (args) > 2 ?
-      (caddr_t *) bif_array_or_null_arg (qst, args, 2, "http_listen_host") : NULL;
+      (caddr_t *) bif_strict_array_or_null_arg (qst, args, 2, "http_listen_host") : NULL;
   dk_session_t *listening = NULL;
   int rc = 0;
   dk_session_t **place = NULL;
@@ -9194,8 +9578,20 @@ bif_http_listen_host (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
       if (place && *place && stop & HS_STOP_LISTEN)
 	{
 	  caddr_t *key, old_key;
+	  int is_https_ctx = 0;
+#ifdef _SSL
+	  SSL_CTX *ssl_ctx = NULL;
+#endif
+
 	  listening = *place;
+
+#ifdef _SSL
+	  ssl_ctx = (SSL_CTX *) tcpses_get_sslctx (listening->dks_session);
+	  if (ssl_ctx)
+	    is_https_ctx = 1;
+#endif
 	  http_trace (("stop listen on: %s %p\n", host, listening));
+	  log_info ("HTTP%s server offline at %s", is_https_ctx ? "S" : "", host);
 	  key = (caddr_t *) id_hash_get_key (http_listeners, (caddr_t) & host);
 	  old_key = *key;
 	  id_hash_remove (http_listeners, (caddr_t) & host);
@@ -9203,8 +9599,8 @@ bif_http_listen_host (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	    dk_free_box (old_key);
 	  PrpcDisconnect (listening);
 #ifdef _SSL
-	  if (tcpses_get_sslctx (listening->dks_session))
-	    SSL_CTX_free ((SSL_CTX *) tcpses_get_sslctx (listening->dks_session));
+	  if (ssl_ctx)
+	    SSL_CTX_free (ssl_ctx);
 #endif
 	  PrpcSessionFree (listening);
 	}
@@ -9300,7 +9696,7 @@ get_http_map (ws_http_map_t ** ws_map, char * lpath, int dir, char * host, char 
   ws_http_map_t ** last_match = NULL;
   int inx, len, elm, rlen, n;
   caddr_t res = NULL;
-  caddr_t * paths = (caddr_t *) http_path_to_array (lpath, 0);
+  caddr_t * paths = (caddr_t *) http_path_to_array (lpath, HTTP_URL_ESCAPED);
   caddr_t path_str;
   if (!ws_map)
     return NULL;
@@ -9374,15 +9770,80 @@ get_http_map (ws_http_map_t ** ws_map, char * lpath, int dir, char * host, char 
   return res;
 }
 
+int32 https_renegotiate_timeout = 1000000; /* µSec */
+int32 https_handshake_retries = 1000;
+
+#ifdef _SSL
+
+#define HTTPS_CHECK_RENEGOTIATE_PENDING(i, ws, ssl) \
+    do { \
+      int ctr = 0; \
+      while (SSL_renegotiate_pending_compat (ssl) && ctr < https_handshake_retries) \
+	{ \
+	  timeout_t to = { 0, https_renegotiate_timeout}; \
+	  if (i <= 0) \
+	    tcpses_is_read_ready ((ws)->ws_session->dks_session, &to); \
+	  i = SSL_do_handshake (ssl); \
+	  ctr ++; \
+	} \
+    } while (0)
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#define HTPS_SET_ACCEPT_STATE(ssl) SSL_set_state (ssl, SSL_ST_ACCEPT)
+#else
+#define HTPS_SET_ACCEPT_STATE(ssl)
+#endif
+
+/*
+ * according to the docs:
+ * SSL_key_update: returns type of the pending key update operation if there is one, or SSL_KEY_UPDATE_NONE otherwise.
+ * SSL_renegotiate_pending: returns  1 if a renegotiation has been scheduled but not yet acted on, or 0 otherwise.
+*/
+
+int
+SSL_renegotiate_pending_compat (SSL * ssl)
+{
+  int i = 0;
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+  i = SSL_renegotiate_pending (ssl);
+#else
+  if (SSL_version(ssl) >= TLS1_3_VERSION)
+    i = (SSL_KEY_UPDATE_NONE != SSL_get_key_update_type (ssl));
+  else
+    i = SSL_renegotiate_pending (ssl);
+#endif
+  return i;
+}
+
+int
+SSL_renegotiate_compat (SSL * ssl)
+{
+  int i = 0;
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
+  i = SSL_renegotiate (ssl);
+#elif OPENSSL_VERSION_NUMBER < 0x10100000L
+  i = SSL_renegotiate_abbreviated (ssl);
+#else /* OPENSSL_VERSION_NUMBER >= 0x10100000L*/
+  if (SSL_version(ssl) >= TLS1_3_VERSION)
+    i = SSL_key_update (ssl, SSL_KEY_UPDATE_REQUESTED);
+  else
+    i = SSL_renegotiate_abbreviated (ssl);
+#endif
+  return i;
+}
+#endif
+
 /*##***********************************************************
 * Return HTTP header field value w/o leading space and
 * trailing \r\n
 * Note: result should be freed
 **************************************************************/
 caddr_t
-ws_get_packed_hf (ws_connection_t * ws, const char * fld, char * deflt)
+ws_get_packed_hf (ws_connection_t * ws, const char * fld, const char * deflt)
 {
-  caddr_t ret, p1, val = ws_header_field (ws->ws_lines, fld, deflt);
+  caddr_t ret;
+  const char *val = ws_header_field (ws->ws_lines, fld, deflt);
+  const char *p1;
   size_t len = 0;
   if (!val)
     return NULL;
@@ -9415,6 +9876,7 @@ ws_set_phy_path (ws_connection_t * ws, int dir, char * vsp_path)
   int is_https = 0;
 #ifdef _SSL
   SSL *ssl = NULL;
+  int verify_mode = SSL_VERIFY_NONE;
 #endif
   socklen_t len = sizeof (sa);
   int port = 0;
@@ -9434,7 +9896,11 @@ ws_set_phy_path (ws_connection_t * ws, int dir, char * vsp_path)
 
 #ifdef _SSL
   ssl = (SSL *) tcpses_get_ssl (ws->ws_session->dks_session);
-  is_https = (NULL != ssl);
+  if (ssl != NULL)
+    {
+      is_https = 1;
+      verify_mode = SSL_get_verify_mode (ssl);
+    }
 #endif
 
   tcpses_addr_info (ws->ws_session->dks_session, listen_host, sizeof (listen_host), 80, 1);
@@ -9472,7 +9938,39 @@ ws_set_phy_path (ws_connection_t * ws, int dir, char * vsp_path)
       ppath = get_http_map (&(ws->ws_map), lpath, dir, listen_host, listen_host);
     }
   ws->ws_p_path_string = ppath;
-  ws->ws_p_path = (caddr_t *) http_path_to_array (ppath, 1);
+  ws->ws_p_path = (caddr_t *) http_path_to_array (ppath, HTTP_URL_DECODED);
+#ifdef _SSL
+  if (enable_https_vd_renegotiate && is_https && ws->ws_map && ws->ws_map->hm_ssl_verify_mode != verify_mode)
+    {
+      uptrlong ap = ws->ws_map->hm_ssl_verify_ap;
+      int i, verify = ws->ws_map->hm_ssl_verify_mode;
+      static int s_server_auth_session_id_context;
+      char err_buf [1024];
+
+      err_buf [0] = '\0';
+      s_server_auth_session_id_context ++;
+      SSL_set_verify (ssl, verify, (int (*)(int, X509_STORE_CTX *)) https_ssl_verify_callback);
+      SSL_set_app_data (ssl, ap);
+      SSL_set_session_id_context (ssl, (void*)&s_server_auth_session_id_context, sizeof(s_server_auth_session_id_context));
+      i = SSL_renegotiate_compat (ssl);
+      if (i <= 0)
+	{
+	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
+          goto tls_failed;
+	}
+      i = SSL_do_handshake (ssl);
+      if (i <= 0)
+	{
+	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
+          goto tls_failed;
+	}
+      HTPS_SET_ACCEPT_STATE (ssl);
+      HTTPS_CHECK_RENEGOTIATE_PENDING(i, ws, ssl);
+tls_failed:
+      if (*err_buf)
+        log_error ("SSL Renegotiate: %s", err_buf);
+    }
+#endif
   dk_free_box (host);
   dk_free_box (host_hf);
 }
@@ -9600,6 +10098,8 @@ bif_http_map_get (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
     res = box_num (map->hm_xml_template);
   else if (!strcmp (member, "security_level"))
     res = box_copy (map->hm_sec);
+  else if (!strcmp (member, "security_realm"))
+    res = box_copy (map->hm_realm);
   else if (!strcmp (member, "auth_opts"))
     res = box_copy_tree ((box_t) map->hm_auth_opts);
   else if (!strcmp (member, "soap_opts"))
@@ -9688,9 +10188,6 @@ bif_http_request_get (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
 }
 
 
-/* HTTP listeners startup query */
-#define q_listen "select HP_LISTEN_HOST, deserialize (HP_AUTH_OPTIONS), HP_SECURITY from DB.DBA.HTTP_PATH where HP_LISTEN_HOST is not null and HP_LISTEN_HOST <> server_http_port() and HP_LISTEN_HOST <> '*ini*' and HP_LISTEN_HOST <> '*sslini*'"
-
 void
 http_vhosts_init (void)
 {
@@ -9709,8 +10206,7 @@ http_vhosts_init (void)
   while (!err && lc_next (lc))
     {
       char * hp = lc_nth_col (lc, 0);
-      caddr_t * opts = (caddr_t *) lc_nth_col (lc, 1);
-      char * sec = lc_nth_col (lc, 2);
+      caddr_t * ssl_opts = http_prepare_opts (lc);
       caddr_t host = http_host_normalize (hp, 0);
       caddr_t has_it, tried;
       mutex_enter (http_listeners_mutex);
@@ -9718,9 +10214,6 @@ http_vhosts_init (void)
       tried = id_hash_get (http_failed_listeners, (caddr_t) & host);
       if (!has_it && !tried)
 	{
-	  caddr_t * ssl_opts = NULL;
-	  if (DV_STRINGP (sec) && 0 == stricmp (sec, "SSL") && ARRAYP (opts) && box_length (opts))
-	    ssl_opts = opts;
 	  listening = http_listen (host, ssl_opts);
 	  if (listening)
 	    {
@@ -9732,6 +10225,7 @@ http_vhosts_init (void)
 	      id_hash_set (http_failed_listeners, (caddr_t) & host, (caddr_t)&one);
 	    }
 	}
+      dk_free_tree (ssl_opts);
       mutex_leave (http_listeners_mutex);
     }
   lc_free (lc);
@@ -9912,29 +10406,49 @@ bif_is_http_ctx (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
 }
 
 static caddr_t
-bif_is_https_ctx (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
+bif_is_http_error_handler (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
 {
   query_instance_t *qi = (query_instance_t *)qst;
-  caddr_t xproto = NULL;
-  int is_https = 0;
-  ws_connection_t *ws = qi->qi_client->cli_ws;
-#ifdef _SSL
-  SSL *ssl = NULL;
-#endif
-
-  if (!ws)
+  if (!qi->qi_client->cli_ws)
     return box_num(0);
+  return box_num(qi->qi_client->cli_ws->ws_in_error_handler);
+}
+
+
+int
+ws_is_https (ws_connection_t * ws)
+{
+  int is_https = 0;
+
 #ifdef _SSL
-  ssl = (SSL *) tcpses_get_ssl (ws->ws_session->dks_session);
-  is_https = (NULL != ssl);
+  if (ws && ws->ws_session)
+    {
+      SSL *ssl = (SSL *) tcpses_get_ssl (ws->ws_session->dks_session);
+      is_https = (NULL != ssl);
+
+      if (ws->ws_lines)
+	{
+	  const char *xproto = ws_header_field (ws->ws_lines, "X-Forwarded-Proto:", "");
+	  while (*xproto && *xproto <= '\x20')
+	    xproto++;
+	  if (!strncmp (xproto, "https", 5))
+	    is_https = 1;
+	}
+    }
 #endif
 
-  if (ws && ws->ws_lines  && NULL != (xproto = ws_mime_header_field (ws->ws_lines, "X-Forwarded-Proto", NULL, 1)))
-    if (!strcmp(xproto, "https"))
-       is_https = 1;
-  if (xproto) dk_free_box (xproto);
+  return is_https;
+}
 
-  return box_num(is_https ? 1 : 0);
+static caddr_t
+bif_is_https_ctx (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  query_instance_t *qi = (query_instance_t *) qst;
+  int is_https = 0;
+
+  is_https = ws_is_https (qi->qi_client->cli_ws);
+
+  return box_num (is_https ? 1 : 0);
 }
 
 static caddr_t
@@ -9949,10 +10463,9 @@ bif_http_is_flushed (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
 static caddr_t
 bif_https_renegotiate (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
 {
-  char * me = "https_renegotiate";
+  const char * me = "https_renegotiate";
   query_instance_t *qi = (query_instance_t *)qst;
   ws_connection_t *ws = qi->qi_client->cli_ws;
-  int ctr = 0;
 #ifdef _SSL
   SSL *ssl = NULL;
 #endif
@@ -9960,6 +10473,11 @@ bif_https_renegotiate (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
   if (!ws)
     return box_num (0);
 #ifdef _SSL
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+  /* not supported in 1.1.x the rest of code break the state engine flow
+     and causes unpredictable errors in PL calling https_renegotiate(3) */
+  return box_num (0);
+#endif
   ssl = (SSL *) tcpses_get_ssl (ws->ws_session->dks_session);
   if (ssl)
     {
@@ -9978,43 +10496,34 @@ bif_https_renegotiate (caddr_t *qst, caddr_t * err_ret, state_slot_t **args)
 
       ap = ((0xff & https_client_verify) << 24) | (0xffffff & https_client_verify_depth);
 
-      if (HTTPS_VERIFY_REQUIRED == https_client_verify)
-	verify |= SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
-      if (HTTPS_VERIFY_OPTIONAL == https_client_verify || HTTPS_VERIFY_OPTIONAL_NO_CA == https_client_verify)
-	verify |= SSL_VERIFY_PEER;
-
-      SSL_set_verify (ssl, verify, (int (*)(int, X509_STORE_CTX *)) https_ssl_verify_callback);
+      HTTPS_SET_OPENSSL_VERIFY_FLAGS (verify, https_client_verify);
+      SSL_set_verify (ssl, verify, https_ssl_verify_callback);
       SSL_set_ex_data (ssl, 0, (void *) ap);
-      SSL_set_session_id_context (ssl, (void*)&s_server_auth_session_id_context, sizeof(s_server_auth_session_id_context));
+      SSL_set_session_id_context (ssl, (const unsigned char *)((void*)&s_server_auth_session_id_context), sizeof(s_server_auth_session_id_context));
       i = 0;
       IO_SECT (qst);
-      i = SSL_renegotiate (ssl);
+      /*
+       * For tls1.2 or earlier we can do renegotiate, in tls1.3 we can only key update
+       * the SSL_key_update should be called with SSL_KEY_UPDATE_REQUESTED
+       */
+      i = SSL_renegotiate_compat (ssl);
       if (i <= 0)
 	{
 	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
 	  sqlr_new_error ("42000", "..001", "SSL_renegotiate failed %s", err_buf);
 	}
-	i = SSL_do_handshake (ssl);
-      if (i <= 0) 
+      /* we set accept state before to call handshake to force tls1.2 to do r/w */
+      i = SSL_do_handshake (ssl);
+      if (i <= 0)
 	{
 	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
 	  sqlr_new_error ("42000", "..002", "SSL_do_handshake failed %s", err_buf);
 	}
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-      SSL_set_state (ssl, SSL_ST_ACCEPT);
-#else
-      SSL_set_accept_state (ssl);	/*FIXME:This does not work in OpenSSL 1.1.1 */
-#endif
-      while (SSL_renegotiate_pending (ssl) && ctr < 1000)
-	{
-	  timeout_t to = { 0, 1000 };
-	  i = SSL_do_handshake (ssl);
-	  if (i <= 0)
-	    tcpses_is_read_ready (ws->ws_session->dks_session, &to);
-	  ctr ++;
-	}
+      /* cannot move accept state before 1st handshake */
+      HTPS_SET_ACCEPT_STATE (ssl);
+      HTTPS_CHECK_RENEGOTIATE_PENDING(i, ws, ssl);
       END_IO_SECT (err_ret);
-      if (i <= 0) 
+      if (i <= 0)
 	{
 	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
 	  sqlr_new_error ("42000", "..003", "SSL_do_handshake failed %s", err_buf);
@@ -10096,7 +10605,8 @@ bif_http_escape (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   dk_session_t * out = http_session_no_catch_arg (qst, args, 2, "http_escape");
   caddr_t text = bif_arg (qst, args, 0, "http_escape");
-  int box_len = text ? box_length (text) : 0;
+  int box_len;
+  dtp_t dtp = DV_TYPE_OF (text);
   int mode = (int) bif_long_arg (qst, args, 1, "http_escape");
   wcharset_t *src_charset;
   wcharset_t *tgt_charset = (((BOX_ELEMENTS (args) < 5) || bif_long_arg (qst, args, 4, "http_escape")) ? CHARSET_UTF8 : default_charset);
@@ -10107,20 +10617,23 @@ bif_http_escape (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
       sqlr_new_error ("22023", "HT058",
         "Incorrect escaping mode (%d) is specified in parameter 2 of http_escape()", mode);
     }
-  switch (DV_TYPE_OF (text))
+  switch (dtp)
     {
     case DV_STRING: case DV_BIN:
       src_charset = (((BOX_ELEMENTS (args) >= 4) && bif_long_arg (qst, args, 3, "http_escape")) ? CHARSET_UTF8 : default_charset);
+      box_len =  box_length (text);
       if (0 < box_len)
-        dks_esc_write (out, text, box_len - 1, tgt_charset, src_charset, mode);
+        dks_esc_write (out, text, box_len - (DV_BIN == dtp ? 0 : 1), tgt_charset, src_charset, mode);
       break;
     case DV_UNAME:
       if ((BOX_ELEMENTS (args) >= 4) && (0 == bif_long_arg (qst, args, 3, "http_escape")) && (CHARSET_UTF8 != default_charset))
         sqlr_new_error ("22023", "HT058",
           "First argument of http_escape() is UNAME but the encoding is explicitly specified as non-UTF-8");
+      box_len =  box_length (text);
       dks_esc_write (out, text, box_len - 1, tgt_charset, CHARSET_UTF8, mode);
       break;
     case DV_WIDE:
+      box_len =  box_length (text);
       dks_wide_esc_write (out, (wchar_t *)text, (box_len/sizeof (wchar_t)) - 1, tgt_charset, mode);
       break;
     }
@@ -10305,9 +10818,9 @@ bif_http_acl_remove (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 }
 
 static void
-http_acl_stats ()
+http_acl_stats (void)
 {
-  static char * szHttpAclName = "HTTP";
+  static const char * szHttpAclName = "HTTP";
   caddr_t *alist, **plist;
 
   plist = (caddr_t **) id_hash_get (http_acls, (caddr_t) &szHttpAclName);
@@ -10556,7 +11069,7 @@ bif_sysacl_bit1_of_tree_vec (caddr_t * qst, caddr_t * err_ret, state_slot_t ** a
   QNCAST (query_instance_t, qi, qst);
   db_buf_t set_mask = qi->qi_set_mask;
   int argcount, set, n_sets = qi->qi_n_sets, first_set = 0;
-  state_slot_t * sysacl_ssl, *user_ssl;
+  state_slot_t * sysacl_ssl, *user_ssl = NULL;
   user_t *curr_user = NULL;
 
   if (!ret)
@@ -10564,7 +11077,7 @@ bif_sysacl_bit1_of_tree_vec (caddr_t * qst, caddr_t * err_ret, state_slot_t ** a
   dc = QST_BOX (data_col_t *, qst, ret->ssl_index);
   argcount = BOX_ELEMENTS (args);
   if (argcount < 1)
-    sqlr_new_error ("42001", "VEC..", "Not enough arguments for sysacl_bit1_of_tree()");
+    sqlr_new_error ("42001", "VEC04", "Not enough arguments for sysacl_bit1_of_tree()");
   sysacl_ssl = args[0];
   sysacl_arg = QST_BOX (data_col_t *, qst, sysacl_ssl->ssl_index);
   if (argcount < 2)
@@ -10605,7 +11118,7 @@ bif_sysacl_bit1_of_tree_vec (caddr_t * qst, caddr_t * err_ret, state_slot_t ** a
         {
           if (DV_DB_NULL == DV_TYPE_OF (sysacl))
             { bit1 = 0; goto ans_done; }
-          sqlr_new_error ("42001", "VEC..", "Wrong dadatype of sysacl");
+          sqlr_new_error ("42001", "VEC05", "Wrong dadatype of sysacl");
         }
       if (NULL != user_arg)
         {
@@ -10739,7 +11252,7 @@ ws_cache_store (ws_connection_t * ws, int store)
 static caddr_t
 bif_http_url_cache_set (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  static char * szMe = "http_url_cache_set";
+  static const char *szMe = "http_url_cache_set";
   caddr_t url = bif_string_arg (qst, args, 0, szMe);
   caddr_t check = bif_string_arg (qst, args, 1, szMe);
   caddr_t *place = (caddr_t *)id_hash_get (http_url_cache, (caddr_t)&url);
@@ -10760,7 +11273,7 @@ bif_http_url_cache_set (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 static caddr_t
 bif_http_url_cache_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  static char * szMe = "http_url_cache_get";
+  static const char *szMe = "http_url_cache_get";
   caddr_t url = bif_string_arg (qst, args, 0, szMe);
   caddr_t *place = (caddr_t *)id_hash_get (http_url_cache, (caddr_t)&url);
   if (place)
@@ -10771,7 +11284,7 @@ bif_http_url_cache_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 static caddr_t
 bif_http_url_cache_remove (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  static char * szMe = "http_url_cache_remove";
+  static const char *szMe = "http_url_cache_remove";
   caddr_t url = bif_string_arg (qst, args, 0, szMe);
   caddr_t *place = (caddr_t *)id_hash_get (http_url_cache, (caddr_t)&url);
   if (place)
@@ -10786,7 +11299,7 @@ bif_http_url_cache_remove (caddr_t * qst, caddr_t * err_ret, state_slot_t ** arg
 }
 
 static void
-http_init_acl_and_cache ()
+http_init_acl_and_cache (void)
 {
   /* INIT the general HTTP ACL */
   http_acls = id_str_hash_create (101);
@@ -10820,7 +11333,30 @@ bif_tcpip_gethostbyaddr (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 static caddr_t
 bif_tcpip_local_interfaces (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  return box_copy_tree (local_interfaces);
+  return box_copy_tree ((caddr_t)local_interfaces);
+}
+
+
+static caddr_t
+bif_inet_aton (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t ip_str = bif_string_arg (qst, args, 0, "inet_aton");
+  struct in_addr in;
+  if (inet_pton (AF_INET, ip_str, (void *) &in))
+    return box_num (in.s_addr);
+  return NEW_DB_NULL;
+}
+
+static caddr_t
+bif_inet_ntoa (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  struct in_addr in;
+  char buf[INET_ADDRSTRLEN], *p_ip;
+  in.s_addr = bif_long_range_arg (qst, args, 0, "inet_ntoa", 0, 0xffffffff);
+  p_ip = inet_ntop (AF_INET, (void *) &in, buf, sizeof (buf));
+  if (p_ip)
+    return box_dv_short_string (p_ip);
+  return NEW_DB_NULL;
 }
 
 static caddr_t
@@ -10946,9 +11482,9 @@ bif_ftp_log (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   if (!qi->qi_client->cli_ws)
     dk_free_box (iaddr);
 
-  snprintf (buff, sizeof (buff), "%s %s [%02d/%s/%04d:%02d:%02d:%02d %+05li] \"%.2000s\" %.3s %ld\n",
+  snprintf (buff, sizeof (buff), "%s %s [%02d/%s/%04d:%02d:%02d:%02d %+05d] \"%.2000s\" %.3s %ld\n",
       host_name, user, (tm->tm_mday), monthname [month - 1], year,
-      tm->tm_hour, tm->tm_min, tm->tm_sec, (long) dt_local_tz_for_logs/36*100,
+      tm->tm_hour, tm->tm_min, tm->tm_sec, TZ_TO_HHMM(dt_local_tz_for_logs),
       command, resp, len);
 
   dk_free_box (host_name);
@@ -11016,8 +11552,9 @@ ws_serve_client_connection (ws_connection_t * ws)
   if (err)
     goto err_end;
 
-  conn = (caddr_t *) dk_alloc_box (sizeof (caddr_t), DV_CONNECTION);
+  conn = (caddr_t *) dk_alloc_box (2 * sizeof (caddr_t), DV_CONNECTION);
   conn[0] = (caddr_t) ses;
+  conn[1] = (caddr_t) 1L;
 
   IN_TXN;
   if (!cli->cli_trx->lt_threads)
@@ -11082,11 +11619,52 @@ http_on_message_input_ready (dk_session_t * ses)
 
 }
 
+dk_hash_t * ws_cli_sessions;
+dk_mutex_t * ws_cli_mtx;
+
 static void
 http_on_message_ses_dropped (dk_session_t * ses)
 {
   if (DKSESSTAT_ISSET (ses, SST_NOT_OK))
     remove_from_served_sessions (ses);
+  mutex_enter (ws_cli_mtx);
+  if (ses->dks_cache_id)
+    remhash ((void *) (ptrlong) ses->dks_cache_id, ws_cli_sessions);
+  ses->dks_cache_id = 0;
+  mutex_leave (ws_cli_mtx);
+}
+
+static caddr_t
+bif_http_get_cli_sessions (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  query_instance_t *qi = (query_instance_t *)qst;
+  long add_args = bif_long_arg (qst, args, 0, "http_get_cli_sessions");
+  boxint sid;
+  dk_session_t * ses;
+  dk_hash_iterator_t hit;
+  dk_set_t set = NULL;
+  mutex_enter (ws_cli_mtx);
+  dk_hash_iterator (&hit, ws_cli_sessions);
+  while (dk_hit_next (&hit, (void**) &sid, (void**) &ses))
+    {
+      caddr_t * args = (caddr_t *) DKS_DB_DATA (ses);
+      dk_set_push (&set, list (3, box_num(sid), add_args ? box_copy_tree (args) : NEW_DB_NULL, box_num((boxint)ses->dks_n_threads)));
+    }
+  mutex_leave (ws_cli_mtx);
+  return list_to_array (dk_set_nreverse (set));
+}
+
+static caddr_t
+bif_http_client_session_cached (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  boxint id = bif_long_arg (qst, args, 0, "http_client_session_cached");
+  boxint ret;
+  dk_session_t * ses;
+  mutex_enter (ws_cli_mtx);
+  ses = (dk_session_t *) gethash ((void *) (ptrlong) id, ws_cli_sessions);
+  mutex_leave (ws_cli_mtx);
+  ret = (ses && ses->dks_n_threads ? 1 : (ses ? 2 : 0));
+  return box_num (ret);
 }
 
 static caddr_t
@@ -11096,18 +11674,22 @@ bif_http_on_message (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   caddr_t *conn = (caddr_t *) bif_arg (qst, args, 0, "http_on_message");
   caddr_t func = bif_string_arg (qst, args, 1, "http_on_message");
   caddr_t cd = bif_arg (qst, args, 2, "http_on_message");
+  int signal_on_disconnected = BOX_ELEMENTS(args) > 3 ? bif_long_arg (qst, args, 3, "http_on_message") : 1;
+  int keep_conn_ref = BOX_ELEMENTS(args) > 4 ? bif_long_arg (qst, args, 4, "http_on_message") : 0; /* use on client side to keep ses ref */
   dk_session_t * ses = NULL;
   ws_connection_t * ws = qi->qi_client->cli_ws;
 
   if (DV_CONNECTION == DV_TYPE_OF (conn))
     {
+      int server_session = 0;
       ses = (dk_session_t *) conn[0];
-      if (DKSESSTAT_ISSET (ses, SST_OK))
-        conn[0] = NULL;
+      server_session = (ws && ses && ses == ws->ws_session);
+      if (ses && DKSESSTAT_ISSET (ses, SST_OK))
+        conn[0] = keep_conn_ref && !server_session ? (caddr_t) ses : (caddr_t) NULL;
       else
 	ses = NULL;
       mutex_enter (thread_mtx);
-      if (ws && ses && ses == ws->ws_session)
+      if (server_session)
 	{
 	  ws->ws_session->dks_ws_status = DKS_WS_CACHED;
 	  ws->ws_session->dks_n_threads++;
@@ -11127,7 +11709,12 @@ bif_http_on_message (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     }
 
   if (ses == NULL)
-    sqlr_new_error ("22023", "HT000", "The http_on_message expects an open connection as 1-st argument");
+    {
+      if (signal_on_disconnected)
+        sqlr_new_error ("22023", "HT000", "The http_on_message expects an open connection as 1-st argument");
+      else
+        return NEW_DB_NULL;
+    }
   http_trace (("http_on_message ses=%p\n", ses));
   DKS_DB_DATA (ses) = (client_connection_t *) list (2, box_copy (func), box_copy_tree (cd));
   PrpcSetPartnerDeadHook (ses, (io_action_func) http_on_message_ses_dropped);
@@ -11137,22 +11724,28 @@ bif_http_on_message (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return NEW_DB_NULL;
 }
 
-dk_hash_t * ws_cli_sessions;
-dk_mutex_t * ws_cli_mtx;
-
 static caddr_t
 bif_http_keep_session (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   query_instance_t *qi = (query_instance_t *)qst;
   caddr_t * conn = (caddr_t *) bif_arg (qst, args, 0, "http_keep_session");
-  long id = bif_long_arg (qst, args, 1, "http_keep_session");
+  boxint id = bif_long_arg (qst, args, 1, "http_keep_session");
+  long flush_flag = BOX_ELEMENTS(args) > 2 ? bif_long_arg (qst, args, 2, "http_keep_session") : 1;
   dk_session_t * ses = NULL;
   ws_connection_t * ws = qi->qi_client->cli_ws;
+
+  /* we have to check if this id exists to do not overlap existing one */
+  mutex_enter (ws_cli_mtx);
+  if (NULL != gethash ((void *) (ptrlong) id, ws_cli_sessions))
+    {
+      *err_ret = srv_make_new_error ("22023", "HT000", "The id specified already exists in the cache");
+      goto err;
+    }
 
   if (DV_CONNECTION == DV_TYPE_OF (conn))
     {
       ses = (dk_session_t *) conn[0];
-      if (DKSESSTAT_ISSET (ses, SST_OK))
+      if (ses && DKSESSTAT_ISSET (ses, SST_OK))
         conn[0] = NULL;
       else
 	ses = NULL;
@@ -11161,47 +11754,57 @@ bif_http_keep_session (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     {
       /* We should mark the session so it will not be disconnected nor freed */
       if (ws->ws_flushed)
-	sqlr_new_error ("42000", "HT000", "The client session is already flushed");
+        {
+          *err_ret = srv_make_new_error ("42000", "HT000", "The client session is already flushed");
+          goto err;
+        }
       ses = qi->qi_client->cli_ws->ws_session;
       mutex_enter (thread_mtx);
       ws->ws_session->dks_ws_status = DKS_WS_CACHED;
       ws->ws_session->dks_n_threads++;
-      ws->ws_flushed = 1;
+      ws->ws_flushed = flush_flag;
       mutex_leave (thread_mtx);
     }
 
   if (ses == NULL)
-    sqlr_new_error ("22023", "HT000", "The http_keep_session expects an open connection as 1-st argument");
+    {
+      *err_ret = srv_make_new_error ("22023", "HT000", "The http_keep_session expects an open connection as 1-st argument");
+      goto err;
+    }
 
-  /* we have to check if this id exists to do not overlap existing one */
-  mutex_enter (ws_cli_mtx);
-  if (NULL == gethash ((void *) (ptrlong) id, ws_cli_sessions))
-    sethash ((void *) (ptrlong) id, ws_cli_sessions, (void *) ses);
-  else
-    *err_ret = srv_make_new_error ("22023", "HT000", "The id specified already exists in the cache");
+  sethash ((void *) (ptrlong) id, ws_cli_sessions, (void *) ses);
+  ses->dks_cache_id = id;
+err:
   mutex_leave (ws_cli_mtx);
   return NEW_DB_NULL;
 }
 
+/* XXX: return cached session, silently return if missing */
 static caddr_t
 bif_http_recall_session (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
   query_instance_t *qi = (query_instance_t *)qst;
-  long id = bif_long_arg (qst, args, 0, "http_recall_session");
+  boxint id = bif_long_arg (qst, args, 0, "http_recall_session");
+  long blocking = BOX_ELEMENTS(args) > 1 ? bif_long_arg (qst, args, 1, "http_recall_session") : 1;
   dk_session_t * ses = NULL;
-  caddr_t * ret = (caddr_t *) dk_alloc_box (2 * sizeof (caddr_t), DV_CONNECTION);
+  caddr_t * ret = NULL;
   ws_connection_t * ws = qi->qi_client->cli_ws;
   semaphore_t * volatile sem = NULL;
 
   mutex_enter (ws_cli_mtx);
   ses = (dk_session_t *) gethash ((void *) (ptrlong) id, ws_cli_sessions);
   remhash ((void *) (ptrlong) id, ws_cli_sessions);
+  if (ses) ses->dks_cache_id = 0;
   mutex_leave (ws_cli_mtx);
 
-  ret[0] = (caddr_t) ses;
-  ret[1] = (caddr_t) 1;
+  if (ses)
+    {
+      ret = (caddr_t *) dk_alloc_box (2 * sizeof (caddr_t), DV_CONNECTION);
+      ret[0] = (caddr_t) ses;
+      ret[1] = (caddr_t) 0L;
+    }
 
-  if (ws && ses == ws->ws_session)
+  if (NULL != ses && NULL != ws && ses == ws->ws_session)
     {
       mutex_enter (thread_mtx);
       ses->dks_n_threads--;
@@ -11212,7 +11815,7 @@ bif_http_recall_session (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     }
 
   mutex_enter (thread_mtx);
-  if (ses && ses->dks_n_threads > 0)
+  if (ses && ses->dks_n_threads > 0 && blocking)
     {
       ses->dks_waiting_http_recall_session = THREAD_CURRENT_THREAD;
       sem = ses->dks_waiting_http_recall_session->thr_sem;
@@ -11223,7 +11826,6 @@ bif_http_recall_session (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     {
       semaphore_enter (sem);
     }
-
   return (caddr_t)ret;
 }
 
@@ -11235,7 +11837,6 @@ bif_http_current_charset (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args
   wcharset_t *charset = WS_CHARSET (ws, qst);
   return box_dv_short_string (CHARSET_NAME (charset, "ISO-8859-1"));
 }
-
 
 caddr_t
 bif_http_status_set (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
@@ -11269,8 +11870,18 @@ bif_http_methods_set (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return NULL;
 }
 
+caddr_t
+bif_string_split (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  caddr_t string = bif_string_or_null_arg (qst, args, 0, "string_split");
+  caddr_t tokens = BOX_ELEMENTS (args) > 1 ? bif_string_or_null_arg (qst, args, 1, "string_split") : NULL;
+  dk_set_t set = NULL;
+  split_string (string, tokens, &set);
+  return list_to_array (dk_set_nreverse (set));
+}
+
 caddr_t *
-box_tpcip_get_interfaces ()
+box_tpcip_get_interfaces (void)
 {
   dk_set_t set = NULL;
 #ifdef SIOCGIFCONF
@@ -11348,7 +11959,7 @@ box_tpcip_get_interfaces ()
 }
 
 int
-http_init_part_one ()
+http_init_part_one (void)
 {
   XML_CHAR_ESCAPE ('<', "&lt;");
   XML_CHAR_ESCAPE ('>', "&gt;");
@@ -11384,6 +11995,7 @@ http_init_part_one ()
   bif_define ("http_proxy", bif_http_proxy);
   bif_define ("http_request_status", bif_http_request_status);
   bif_define_ex ("http_request_status_get", bif_http_request_status_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_request_status_code_get", bif_http_request_status_code_get, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define_typed (ENC_B64_NAME, bif_encode_base64, &bt_varchar);
   bif_define_typed (DEC_B64_NAME, bif_decode_base64, &bt_varchar);
   bif_define_ex ("encode_base64url", bif_encode_base64url, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
@@ -11420,6 +12032,7 @@ http_init_part_one ()
   bif_define_ex ("http_body_read", bif_http_body_read, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define_ex ("__http_stream_params", bif_http_stream_params, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define_ex ("is_http_ctx", bif_is_http_ctx, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("is_http_error_handler", bif_is_http_error_handler, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define_ex ("is_https_ctx", bif_is_https_ctx, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define_ex ("http_is_flushed", bif_http_is_flushed, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define ("https_renegotiate", bif_https_renegotiate);
@@ -11457,6 +12070,8 @@ http_init_part_one ()
   bif_define_ex ("tcpip_gethostbyname", bif_tcpip_gethostbyname, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_ex ("tcpip_gethostbyaddr", bif_tcpip_gethostbyaddr, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_ex ("tcpip_local_interfaces", bif_tcpip_local_interfaces, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("inet_aton", bif_inet_aton, BMD_RET_TYPE, &bt_integer, BMD_DONE);
+  bif_define_ex ("inet_ntoa", bif_inet_ntoa, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
 
   bif_define ("http_full_request", bif_http_full_request);
   bif_define ("http_get_string_output", bif_http_get_string_output);
@@ -11470,9 +12085,13 @@ http_init_part_one ()
   bif_define ("http_on_message", bif_http_on_message);
   bif_define ("http_keep_session", bif_http_keep_session);
   bif_define ("http_recall_session", bif_http_recall_session);
+  bif_define ("http_get_cli_sessions", bif_http_get_cli_sessions);
+  bif_define ("http_client_session_cached", bif_http_client_session_cached);
   bif_define ("http_current_charset", bif_http_current_charset);
   bif_define_ex ("http_status_set", bif_http_status_set, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_ex ("http_methods_set", bif_http_methods_set, BMD_RET_TYPE, &bt_any, BMD_DONE);
+  bif_define_ex ("string_split", bif_string_split, BMD_RET_TYPE, &bt_any, BMD_DONE);
+
   ws_cli_sessions = hash_table_allocate (100);
   ws_cli_mtx = mutex_allocate ();
 #ifdef VIRTUAL_DIR
@@ -11523,8 +12142,15 @@ http_init_part_one ()
     }
 
   snprintf (hsts_header_buf, sizeof (hsts_header_buf), "Strict-Transport-Security: max-age=%d\r\n", https_hsts_max_age);
+  if (https_csp != NULL)
+    {
+      snprintf (csp_header_buf, sizeof (csp_header_buf), "Content-Security-Policy: %s\r\n", https_csp);
+      if (NULL != strstr (https_csp, "upgrade-insecure-requests"))
+        upgrade_insecure_http = 1;
+    }
 
   dns_host_name = get_qualified_host_name ();
+  split_string (WS_CORS_DEFAULT_ALLOW_HEADERS, NULL, &http_default_allow_headers_list);
   return 1;
 }
 
@@ -11553,7 +12179,7 @@ http_threads_allocate (int n_threads)
 }
 
 void
-ws_thr_cache_clear ()
+ws_thr_cache_clear (void)
 {
 #define WS_MIN_RC 1
   static void ** wst;
@@ -11566,17 +12192,13 @@ ws_thr_cache_clear ()
   DO_SET (ws_connection_t *, ws, &ws_threads)
       ws->ws_thr_cache_clear = 1;
   END_DO_SET();
-  if (ws_dbcs->rc_fill > WS_MIN_RC)
-    {
-      mutex_enter (ws_dbcs->rc_mtx);
-      n = ws_dbcs->rc_fill;
-      memcpy (wst, ws_dbcs->rc_items, n * sizeof (void*));
-      ws_dbcs->rc_fill = WS_MIN_RC;
-      mutex_leave (ws_dbcs->rc_mtx);
-    }
-  else
+  n = ws_dbcs->rc_fill - WS_MIN_RC;
+  if (0 >= n)
     return;
-  for (i = WS_MIN_RC; i < n; i++)
+  if (n > http_threads)
+    GPF_T1 ("unexpected number of ws connections");
+  resource_get_batch (ws_dbcs, wst, n, 0);
+  for (i = 0; i < n; i++)
     {
       ws = (ws_connection_t *) wst[i];
       thr_alloc_cache_clear (ws->ws_thread);
@@ -11585,15 +12207,13 @@ ws_thr_cache_clear ()
     }
 }
 
-size_t dk_alloc_cache_total (void * cache);
-
 size_t
-http_threads_mem_report ()
+http_threads_mem_report (void)
 {
   size_t cache_fill = 0;
   DO_SET (ws_connection_t *, ws, &ws_threads)
     {
-      cache_fill += dk_alloc_cache_total (ws->ws_thread->thr_alloc_cache);  
+      cache_fill += dk_alloc_cache_total (ws->ws_thread->thr_alloc_cache);
     }
   END_DO_SET();
   return cache_fill;
@@ -11602,7 +12222,7 @@ http_threads_mem_report ()
 extern int cl_no_init;
 
 int
-http_init_part_two ()
+http_init_part_two (void)
 {
   dk_session_t *listening;
 #ifdef _SSL
@@ -11709,12 +12329,8 @@ http_init_part_two ()
 	  goto init_ssl_exit;
 	}
 
-      if (!ssl_ctx_set_dhparam (ssl_ctx, https_dhparam))
-	{
-	  cli_ssl_get_error_string (err_buf, sizeof (err_buf));
-	  log_error ("HTTPS: Error setting SSL DH param [%s]: %s", https_dhparam, err_buf);
-	  goto init_ssl_exit;
-	}
+      if (!https_ssl_ctx_set_dhparam (ssl_ctx, https_dhparam))
+        goto init_ssl_exit;
 
       if (!ssl_ctx_set_ecdh_curve (ssl_ctx, https_ecdh_curve))
 	{
@@ -11726,42 +12342,32 @@ http_init_part_two ()
       if (!ssl_server_set_certificate (ssl_ctx, https_cert, https_key, https_extra))
 	goto init_ssl_exit;
 
-      if (https_client_verify_file)
-	{
-	if (!SSL_CTX_load_verify_locations (ssl_ctx, https_client_verify_file, NULL))
-	  {
-	    cli_ssl_get_error_string (err_buf, sizeof (err_buf));
-	    log_error ("HTTPS: Invalid X509 client CA file %s : %s", https_client_verify_file, err_buf);
-	      goto init_ssl_exit;
-	  }
-	}
+      xenc_load_verify_CA_list (ssl_ctx, https_client_verify_file);
 
       if (https_client_verify > 0)
 	{
 	  int verify = SSL_VERIFY_NONE, session_id_context = srv_pid;
 	  uptrlong ap;
 
-	  if (HTTPS_VERIFY_REQUIRED == https_client_verify)
-	    verify |= SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT | SSL_VERIFY_CLIENT_ONCE;
-	  if (HTTPS_VERIFY_OPTIONAL == https_client_verify || HTTPS_VERIFY_OPTIONAL_NO_CA == https_client_verify)
-	    verify |= SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
-	  SSL_CTX_set_verify (ssl_ctx, verify, https_cert_verify_callback);
+          HTTPS_SET_OPENSSL_VERIFY_FLAGS (verify, https_client_verify);
+	  SSL_CTX_set_verify (ssl_ctx, verify, https_ssl_ctx_verify_callback);
 	  SSL_CTX_set_verify_depth (ssl_ctx, https_client_verify_depth);
 	  ap = ((0xff & https_client_verify) << 24) | (0xffffff & https_client_verify_depth);
 	  SSL_CTX_set_ex_data (ssl_ctx, 0, (void *) ap);
 	  SSL_CTX_set_session_id_context(ssl_ctx, (unsigned char  *)&session_id_context, sizeof session_id_context);
 	}
 
-      if (https_client_verify_file)
+      if (https_client_verify_file && HTTPS_VERIFY_REQUIRED == https_client_verify)
 	{
 	  int i;
-	  STACK_OF(X509_NAME) *skCAList = SSL_load_client_CA_file (https_client_verify_file);
+	  STACK_OF(X509_NAME) *skCAList = xenc_CA_names_stack (https_client_verify_file);
 
 	  SSL_CTX_set_client_CA_list (ssl_ctx, skCAList);
 	  skCAList = SSL_CTX_get_client_CA_list (ssl_ctx);
 	  if (sk_X509_NAME_num(skCAList) == 0)
 	    log_warning ("HTTPS: Client authentication requested but no CA known for verification");
 
+#ifndef NDEBUG
 	  for (i = 0; i < sk_X509_NAME_num(skCAList); i++)
 	    {
 	      char ca_buf[1024];
@@ -11769,6 +12375,7 @@ http_init_part_two ()
               if (X509_NAME_oneline (ca_name, ca_buf, sizeof (ca_buf)))
 		log_debug ("HTTPS: Using X509 Client CA %s", ca_buf);
 	    }
+#endif
 	}
 
       ssl_port = atoi (https_port);
@@ -12026,21 +12633,21 @@ is_internal_user (client_connection_t *cli)
 
 
 char *
-srv_http_port ()
+srv_http_port (void)
 {
    return http_port;
 }
 
 
 const char *
-srv_www_root ()
+srv_www_root (void)
 {
    return www_root;
 }
 
 
 caddr_t
-srv_dns_host_name ()
+srv_dns_host_name (void)
 {
    return dns_host_name;
 }

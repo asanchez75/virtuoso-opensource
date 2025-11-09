@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -21,7 +21,7 @@
  *
  */
 
-#define PLUGIN_VERSION "1.1"
+#define PLUGIN_VERSION "1.2"
 
 #include <stdio.h>
 #include <iostream>
@@ -393,7 +393,7 @@ bif_geos_get_coordinate (caddr_t * qst, caddr_t * err, state_slot_t ** args)
 }
 
 #define BIF_GEXXX(gexxx,unwind,bifname) do { \
-    if (((query_instance_t *)qst)->qi_query->qr_no_cast_error && strstr (gexxx.what(), " does not support ")) \
+    if ((qst) && ((query_instance_t *)qst)->qi_query->qr_no_cast_error && strstr (gexxx.what(), " does not support ")) \
       return NEW_DB_NULL; \
     unwind; \
     sqlr_new_error ("22023", "GEO22", "Error in \"%s\"() function: %s", (bifname), gexxx.what()); \
@@ -451,16 +451,16 @@ bif_geos_convex_hull (caddr_t * qst, caddr_t * err, state_slot_t ** args)
 static caddr_t
 bif_geos_envelope (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  caddr_t res = bif_st_get_bounding_box_impl (qst, err_ret, args, 1, "GEOS envelope", GEO_ARG_ANY_NULLABLE);
-  if (NULL == res)
-    {
-      geo_t *empty_res = geo_alloc (GEO_BOX, 0, GEO_SRCODE_DEFAULT);
-      GEO_XYBOX_SET_EMPTY (empty_res->XYbox);
-      return (caddr_t)empty_res;
-    }
-  if (DV_GEO != DV_TYPE_OF (res))
+  int arg_err;
+  std::auto_ptr<geos::geom::Geometry> arg1 = bif_Geometry_auto_ptr_arg_nosignal (qst, args, 0, "GEOS envelope", GEO_ARG_ANY_NONNULL, &arg_err);
+  std::auto_ptr<geos::geom::Geometry> res;
+  if (arg_err)
     return NEW_DB_NULL;
-  return res;
+  try { res = std::auto_ptr<geos::geom::Geometry> (arg1.get()->getEnvelope()); }
+  CATCH_BIF_GEXXX((arg1.reset()), "GEOS envelope")
+  if (NULL == res.get())
+    return NEW_DB_NULL;
+  return (caddr_t)import_Geometry_as_geo (res.get());
 }
 
 static caddr_t
@@ -685,16 +685,16 @@ bif_geos_s_convex_hull (caddr_t * qst, caddr_t * err, state_slot_t ** args)
 static caddr_t
 bif_geos_s_envelope (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
-  caddr_t res = bif_st_get_bounding_box_impl (qst, err_ret, args, 1, "GEOS silent envelope", GEO_ARG_ANY_NULLABLE | GEO_ARG_NONGEO_AS_IS);
-  if (NULL == res)
-    {
-      geo_t *empty_res = geo_alloc (GEO_BOX, 0, GEO_SRCODE_DEFAULT);
-      GEO_XYBOX_SET_EMPTY (empty_res->XYbox);
-      return (caddr_t)empty_res;
-    }
-  if (DV_GEO != DV_TYPE_OF (res))
+  int arg_err;
+  std::auto_ptr<geos::geom::Geometry> arg1 = bif_Geometry_auto_ptr_arg_nosignal (qst, args, 0, "GEOS silent envelope", GEO_ARG_ANY_NONNULL, &arg_err);
+  std::auto_ptr<geos::geom::Geometry> res;
+  if (arg_err)
     return NEW_DB_NULL;
-  return res;
+  try { res = std::auto_ptr<geos::geom::Geometry> (arg1.get()->getEnvelope()); }
+  CATCH_BIF_GEXXX((arg1.reset()), "GEOS silent envelope")
+  if (NULL == res.get())
+    return NEW_DB_NULL;
+  return (caddr_t)import_Geometry_as_geo (res.get());
 }
 
 static caddr_t
@@ -814,6 +814,25 @@ bif_geos_is_simple (caddr_t * qst, caddr_t * err, state_slot_t ** args)
         res = arg1.get()->isSimple();
     }
   CATCH_BIF_GEXXX((arg1.reset()), "GEOS isSimple")
+  return box_num (res ? 1 : 0);
+}
+
+static caddr_t
+bif_geos_is_valid (caddr_t * qst, caddr_t * err, state_slot_t ** args)
+{
+  int arg_err;
+  std::auto_ptr<geos::geom::Geometry> arg1 = bif_Geometry_auto_ptr_arg_nosignal (qst, args, 0, "GEOS isValid", GEO_ARG_ANY_NONNULL, &arg_err);
+  if (arg_err)
+    return NEW_DB_NULL;
+  int res;
+  try
+    {
+      if (0 == arg1.get()->getNumGeometries())
+        res = 0;
+      else
+        res = arg1.get()->isValid();
+    }
+  CATCH_BIF_GEXXX((arg1.reset()), "GEOS isValid")
   return box_num (res ? 1 : 0);
 }
 
@@ -1299,6 +1318,7 @@ virt_geos_pre_log_action (char *mode)
   bif_define_ex ("GEOS spatialDimension"	, bif_geos_spat_dimension	, BMD_ALIAS, "GEOS-spatialDimension"		, DF_GS_ALIASES("spatialDimension")	,BMD_MIN_ARGCOUNT, 1, BMD_MAX_ARGCOUNT, 1, BMD_RET_TYPE, _gate._bt_integer._ptr, BMD_IS_PURE, BMD_DONE);
   bif_define_ex ("GEOS isEmpty"		, bif_geos_is_empty		, BMD_ALIAS, "GEOS-isEmpty"			, DF_GS_ALIASES("isEmpty")	,BMD_MIN_ARGCOUNT, 1, BMD_MAX_ARGCOUNT, 1, BMD_RET_TYPE, _gate._bt_integer._ptr, BMD_IS_PURE, BMD_DONE);
   bif_define_ex ("GEOS isSimple"	, bif_geos_is_simple		, BMD_ALIAS, "GEOS-isSimple"			, DF_GS_ALIASES("isSimple")	,BMD_MIN_ARGCOUNT, 1, BMD_MAX_ARGCOUNT, 1, BMD_RET_TYPE, _gate._bt_integer._ptr, BMD_IS_PURE, BMD_DONE);
+  bif_define_ex ("GEOS isValid"	, bif_geos_is_valid		, BMD_ALIAS, "GEOS-isValid"			, DF_GS_ALIASES("isValid")	,BMD_MIN_ARGCOUNT, 1, BMD_MAX_ARGCOUNT, 1, BMD_RET_TYPE, _gate._bt_integer._ptr, BMD_IS_PURE, BMD_DONE);
   bif_define_ex ("GEOS isUnsupported"	, bif_geos_is_unsupported	, BMD_ALIAS, "GEOS-isUnsupported"						,BMD_MIN_ARGCOUNT, 1, BMD_MAX_ARGCOUNT, 1, BMD_RET_TYPE, _gate._bt_any_box._ptr, BMD_IS_PURE, BMD_DONE);
   bif_define_ex ("GEOS asWKT"		, bif_geos_as_wkt		, BMD_ALIAS, "GEOS-asWKT"			, DF_GS_ALIASES("hasSerialization")	, DF_GS_ALIASES("asWKT")	,BMD_MIN_ARGCOUNT, 1, BMD_MAX_ARGCOUNT, 1, BMD_RET_TYPE, _gate._bt_any_box._ptr, BMD_IS_PURE, BMD_DONE);
 
@@ -1364,7 +1384,7 @@ virt_geos_postponed_action (char *mode)
 
 extern "C"
 void
-virt_geos_plugin_connect (void *data)
+virt_geos_plugin_connect (void *appdata)
 {
   dk_set_push (get_srv_global_init_pre_log_actions_ptr(), (void *)virt_geos_pre_log_action);
   dk_set_push (get_srv_global_init_postponed_actions_ptr(), (void *)virt_geos_postponed_action);

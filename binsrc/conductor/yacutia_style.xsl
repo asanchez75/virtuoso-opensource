@@ -4,7 +4,7 @@
  -  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  -  project.
  -
- -  Copyright (C) 1998-2021 OpenLink Software
+ -  Copyright (C) 1998-2025 OpenLink Software
  -
  -  This project is free software; you can redistribute it and/or modify it
  -  under the terms of the GNU General Public License as published by the
@@ -22,7 +22,7 @@
 -->
 <!--
   Virtuoso Conductor XSL style-sheet for page macros
-  Copyright (C) 2005-2021 OpenLink Software
+  Copyright (C) 2005-2025 OpenLink Software
 -->
 <xsl:stylesheet version="1.0"
                 xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
@@ -237,7 +237,7 @@
       </ul>
       <ul class="left_id">
         <li>Version: <?V sys_stat ('st_dbms_ver') ?></li>
-        <li>Build: <?V sys_stat ('st_build_date') ?></li>
+        <li>Build: <?V sys_stat('st_build_date') ?> (<?V y_sys_stat('git_head') ?>)</li>
       </ul>
     </div>
     <div id="LC" class="content">
@@ -410,7 +410,7 @@
       ]]>
     </v:before-render>
   </v:button>
-  &nbsp;
+  &amp;nbsp;
   <v:button name="{@data-set}_prev" action="simple" style="url" value="" xhtml_alt="Previous" xhtml_class="navi-button">
     <v:before-render>
       <![CDATA[
@@ -418,7 +418,7 @@
       ]]>
     </v:before-render>
   </v:button>
-  &nbsp;
+  &amp;nbsp;
   <v:button name="{@data-set}_next" action="simple" style="url" value="" xhtml_alt="Next" xhtml_class="navi-button">
     <v:before-render>
       <![CDATA[
@@ -426,7 +426,7 @@
       ]]>
     </v:before-render>
   </v:button>
-  &nbsp;
+  &amp;nbsp;
   <v:button name="{@data-set}_last" action="simple" style="url" value="" xhtml_alt="Last" xhtml_class="navi-button">
     <v:before-render>
       <![CDATA[

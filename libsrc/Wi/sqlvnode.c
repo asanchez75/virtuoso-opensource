@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -141,6 +141,7 @@ select_node_input_subq_vec (select_node_t * sel, caddr_t * inst, caddr_t * state
 	    bits = sel_extend_bits (sel, inst, set_no, &bits_max);
 	  bits[set_no >> 3] |= 1 << (set_no & 7);
 	}
+      return;
     }
   else if (SEL_VEC_SCALAR == sel->sel_vec_role && sel->sel_scalar_ret)
     {
@@ -158,6 +159,7 @@ select_node_input_subq_vec (select_node_t * sel, caddr_t * inst, caddr_t * state
 	      dc_assign_copy (inst, sel->sel_scalar_ret, ext_set_no, sel->sel_out_slots[0], row);
 	    }
 	}
+      return;
     }
   else if (SEL_VEC_DT == sel->sel_vec_role)
     {
@@ -257,7 +259,12 @@ select_node_input_vec (select_node_t * sel, caddr_t * inst, caddr_t * state)
 	  print_int (is_full ? QA_ROW_LAST_IN_BATCH : QA_ROW, __ses);
 	  for (inx = 0; inx < slots; inx++)
 	    {
-	      caddr_t value = QST_GET (inst, sel->sel_out_slots[inx]);
+              state_slot_t * out_ssl = sel->sel_out_slots[inx];
+              caddr_t value;
+              if (out_ssl->ssl_is_alias && out_ssl->ssl_alias_of)
+                value = QST_GET (inst, out_ssl->ssl_alias_of);
+              else
+                value = QST_GET (inst, out_ssl);
 	      print_object (value, __ses, NULL, NULL);
 	    }
 	  b2 = __ses->dks_bytes_sent;
@@ -571,6 +578,9 @@ set_ctr_vec_input (set_ctr_node_t * sctr, caddr_t * inst, caddr_t * state)
 	}
       memzero (bits, box_length (bits));
       SRC_IN_STATE (sctr, inst) = inst;
+      /* reset outer's results as they will be never run, but filled further */
+      if (ose->src_gen.src_pre_reset)
+        dc_reset_array (inst, (data_source_t *)ose, ose->src_gen.src_pre_reset, n_sets);
     }
   QST_INT (inst, sctr->src_gen.src_out_fill) = 0;
   DC_CHECK_LEN (dc, n_sets - 1);
@@ -655,7 +665,7 @@ sqs_out_sets (subq_source_t * sqs, caddr_t * inst)
   QST_INT (inst, sqs->src_gen.src_out_fill) = 0;
   for (inx = 0; inx < n_res; inx++)
     {
-      int set = qst_vec_get_int64 (inst, sel->sel_set_no, inx);
+      int set = sel->sel_set_no ? qst_vec_get_int64 (inst, sel->sel_set_no, inx) : 0;
       qn_result ((data_source_t *) sqs, inst, set);
     }
 }
@@ -700,7 +710,6 @@ subq_node_vec_input (subq_source_t * sqs, caddr_t * inst, caddr_t * state)
       qi->qi_set_mask = NULL;
       qi->qi_n_sets = set_nos->dc_n_values;
       err = subq_next (sqs->sqs_query, inst, flag);
-      flag = CR_OPEN;
       if (IS_BOX_POINTER (err))
 	sqlr_resignal (err);
       if ((caddr_t) SQL_NO_DATA_FOUND == err)
@@ -708,6 +717,7 @@ subq_node_vec_input (subq_source_t * sqs, caddr_t * inst, caddr_t * state)
 	  SRC_IN_STATE (sqs, inst) = NULL;
 	  return;
 	}
+      flag = CR_OPEN;
       if (uni)
 	{
 	  int nth = unbox (qst_get (inst, uni->uni_nth_output)) - 1;
@@ -717,7 +727,7 @@ subq_node_vec_input (subq_source_t * sqs, caddr_t * inst, caddr_t * state)
       QST_INT (inst, sqs->src_gen.src_out_fill) = 0;
       for (inx = 0; inx < n_res; inx++)
 	{
-	  int set = qst_vec_get_int64 (inst, sel->sel_set_no, inx);
+	  int set = sel->sel_set_no ? qst_vec_get_int64 (inst, sel->sel_set_no, inx) : 0;
 	  qn_result ((data_source_t *) sqs, inst, set);
 	}
       if (QST_INT (inst, sqs->src_gen.src_out_fill))
@@ -764,7 +774,7 @@ outer_seq_end_vec_input (outer_seq_end_node_t * ose, caddr_t * inst, caddr_t * s
     if (!out)
       continue;
     out_dc = QST_BOX (data_col_t *, inst, ssl->ssl_index);
-    shadow_dc = QST_BOX (data_col_t *, inst, ose->ose_out_shadow[inx]->ssl_index);
+      shadow_dc = QST_BOX (data_col_t *, inst, out->ssl_index);
     len = dc_elt_size (out_dc);
     dc_reset (shadow_dc);
       if (shadow_dc->dc_dtp != out_dc->dc_dtp)
@@ -782,7 +792,15 @@ outer_seq_end_vec_input (outer_seq_end_node_t * ose, caddr_t * inst, caddr_t * s
       {
 	int sinx = sslr_set_no (inst, ssl, set);
 	if (DCT_BOXES & shadow_dc->dc_type)
-	  ((caddr_t *) shadow_dc->dc_values)[set] = box_copy_tree (((caddr_t *) out_dc->dc_values)[sinx]);
+	  {
+	    if (sinx < out_dc->dc_n_values)
+	      ((caddr_t *) shadow_dc->dc_values)[set] = box_copy_tree (((caddr_t *) out_dc->dc_values)[sinx]);
+	    else
+	      {
+		((caddr_t *) shadow_dc->dc_values)[set] = NULL;
+		dc_set_null (shadow_dc, set);
+	      }
+	  }
 	else
 	  {
 	    memcpy_16 (shadow_dc->dc_values + len * set, out_dc->dc_values + len * sinx, len);
@@ -901,7 +919,7 @@ cl_local_deletes (delete_node_t * del, caddr_t * inst, caddr_t * part_inst)
   {
     if (!ik)
       continue;
-      itc->itc_isolation = ISO_SERIALIZABLE == qi->qi_isolation ? ISO_SERIALIZABLE : ISO_REPEATABLE;
+    itc->itc_isolation = ISO_SERIALIZABLE == qi->qi_isolation ? ISO_SERIALIZABLE : ISO_REPEATABLE;
     itc_free_owned_params (itc);
       itc_col_free (itc);
       itc->itc_insert_key = ik->ik_key;
@@ -940,7 +958,8 @@ cl_local_deletes (delete_node_t * del, caddr_t * inst, caddr_t * part_inst)
       itc->itc_key_spec = ks.ks_spec = ik->ik_key->key_insert_spec;
       if (ks.ks_key->key_is_col)
 	itc->itc_v_out_map = NULL;
-	{
+
+      {
 	  itc_from_keep_params (itc, itc->itc_insert_key, qi->qi_client->cli_slice);
 	  itc_param_sort (&ks, itc, ik->ik_key->key_not_null);
 	  if (!itc->itc_n_sets)
@@ -974,6 +993,7 @@ cl_local_deletes (delete_node_t * del, caddr_t * inst, caddr_t * part_inst)
 }
 
 
+#if 0
 void
 dbg_del_check (data_col_t * source_dc, int source_row)
 {
@@ -982,6 +1002,7 @@ dbg_del_check (data_col_t * source_dc, int source_row)
     bing ();
   dk_free_tree (box);
 }
+#endif
 
 #define   CL_AC_RESET_CK(is_reset, del, qi) \
 { \
@@ -1162,12 +1183,13 @@ update_node_vec_run (update_node_t * upd, caddr_t * inst, caddr_t * state)
       ins_key_t * ik = upd->upd_keys[k];
       if (!upd->upd_keys[k])
 	continue;
-	{
-	  key_vec_insert (ins, state, itc, upd->upd_keys[k]);
-	  qi->qi_n_affected = n_aff;
-	  itc_free_owned_params (itc);
-	  itc_col_free (itc);
-	}
+
+      {
+	key_vec_insert (ins, state, itc, upd->upd_keys[k]);
+	qi->qi_n_affected = n_aff;
+	itc_free_owned_params (itc);
+	itc_col_free (itc);
+      }
     }
   qi->qi_n_affected = n_aff;
   if (itc->itc_siblings)

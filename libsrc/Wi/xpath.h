@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -199,6 +199,8 @@ typedef struct xp_ctx_s
     int			xc_is_generated;
   } xp_ctx_t;
 
+#define XT_P(s, tp) \
+  (ARRAYP (s) && BOX_ELEMENTS (s) > 0 && ((XT *)(s))->type == tp)
 
 typedef ptrlong xqst_t; /* int size of caddr_t */
 

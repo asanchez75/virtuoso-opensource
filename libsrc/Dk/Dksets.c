@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -144,7 +144,7 @@ DBG_NAME (dk_set_delete_nth) (DBG_PARAMS dk_set_t * set, int idx)
 
 
 uint32
-dk_set_length (s_node_t * set)
+dk_set_length (dk_set_t set)
 {
   uint32 count;
 

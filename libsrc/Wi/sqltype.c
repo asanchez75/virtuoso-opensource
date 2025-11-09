@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -307,7 +307,7 @@ udt_compile_class_methods (dbe_schema_t * sc, sql_class_t * udt,
 	int inx2;
 	DO_BOX (UST *, prop, inx2, mtd->_.method_def.props)
 	  {
-	    if (ST_P (prop, UDT_EXT))
+	    if (UST_P (prop, UDT_EXT))
 	      {
 		if (prop->_.ext_def.name)
 		  {
@@ -337,7 +337,7 @@ udt_compile_class_methods (dbe_schema_t * sc, sql_class_t * udt,
 		    udtm->scm_ext_type = box_dv_short_string (prop->_.ext_def.type);
 		  }
 	      }
-	    else if (ST_P (prop, UDT_VAR_EXT))
+	    else if (UST_P (prop, UDT_VAR_EXT))
 	      {
 		if (udtm->scm_type != UDT_METHOD_STATIC)
 		  {
@@ -876,6 +876,8 @@ udt_drop_class_def (query_instance_t * qi, ST * _tree)
   sql_class_t *sub_udt;
 
   dbg_udt_print_class_hash (isp_schema (NULL), "before drop udt", tree->_.drop_udt.name);
+  if (!udt && tree->_.drop_udt.drop_silent)
+    return;
   if (!udt)
     sqlr_new_error ("42000", "UD021", "No user defined class %.200s", tree->_.drop_udt.name);
   if (NULL != (sub_udt = udt_is_supertype_of_any (udt)))
@@ -2632,7 +2634,11 @@ sqlc_udt_is_udt_call (sql_comp_t * sc, char *name, dk_set_t * code,
 	  cv_call (code, NULL, t_sqlp_box_id_upcase (UDT_MEMBER_HANDLER_BIF), ret, bif_parms);
 	  qr_uses_type (sc->sc_cc->cc_query, udt->scl_name);
 	  if (ret && IS_REAL_SSL (ret) && ret->ssl_dtp == DV_UNKNOWN)
-	    ret->ssl_sqt = udt->scl_member_map[fld_inx]->sfl_sqt;
+            {
+              ret->ssl_sqt = udt->scl_member_map[fld_inx]->sfl_sqt;
+              if (!ret->ssl_sqt.sqt_class)
+                ret->ssl_dtp = DV_ANY;
+            }
 	  if (ret && udt->scl_ext_lang == UDT_LANG_SQL)
 	    ret->ssl_is_observer = 1;
 	  retc = 1;
@@ -4033,8 +4039,36 @@ bif_udt_get_info (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
       if (udt->scl_super)
 	result = box_dv_short_string (udt->scl_super->scl_name);
     }
+  else if (!stricmp (info_name, "attributes"))
+    {
+      int inx;
+      dk_set_t set = NULL;
+      DO_BOX (sql_field_t *, fld, inx, udt->scl_member_map)
+        {
+          dk_set_push (&set, box_dv_short_string (fld->sfl_name));
+        }
+      END_DO_BOX;
+      result = list_to_array (dk_set_nreverse (set));
+    }
+  else if (!stricmp (info_name, "attributes_info"))
+    {
+      int inx;
+      dk_set_t set = NULL;
+      DO_BOX (sql_field_t *, fld, inx, udt->scl_member_map)
+        {
+          dk_set_push (&set, list (6,
+                box_dv_short_string (fld->sfl_name),
+                fld->sfl_sqt.sqt_dtp,
+                fld->sfl_sqt.sqt_class ? box_copy_tree(fld->sfl_sqt.sqt_class->scl_name) : NULL,
+                box_copy_tree (fld->sfl_sqt.sqt_tree),
+                box_copy_tree (fld->sfl_soap_type),
+                box_copy_tree (fld->sfl_soap_name)));
+        }
+      END_DO_BOX;
+      result = list_to_array (dk_set_nreverse (set));
+    }
   else
-    sqlr_new_error ("22023", "UD105", "Invalid info name. Valid infos are : children, parent");
+    sqlr_new_error ("22023", "UD105", "Invalid info name. Valid infos are : children, parent, attributes and attributes_info");
 
   return result ? result : NEW_DB_NULL;
 }

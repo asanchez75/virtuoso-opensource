@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -391,22 +391,19 @@ HC_RET
 http_cli_negotiate_socks4 (dk_session_t * ses, char * in_host, char * name, char ** err_ret)
 {
   unsigned char socksreq[270];
-  int port, rc;
+  int port = 80, rc;
   unsigned short ip[4];
-  char *pos, host[1000], ip_addr[50];
+  char *pos, host[1024], ip_addr[50];
   int packetsize;
 
-  pos = strchr (in_host, ':');
-  if (pos)
+  strncpy (host, in_host, sizeof (host));
+  host[1023] = '\0';
+  if ((pos = strchr (host, ':')) != NULL)
     {
-      memcpy (host, in_host, pos - in_host);
+      *pos = '\0';
       port = atoi (pos + 1);
     }
-  else
-    {
-      strcpy_ck (host, in_host);
-      port = 80;
-    }
+
   socksreq[0] = 4;
   socksreq[1] = 1; /* connect */
   *((unsigned short*)&socksreq[2]) = htons((unsigned short) port);
@@ -462,22 +459,19 @@ HC_RET
 http_cli_negotiate_socks5 (dk_session_t * ses, char * in_host, char * user, char * pass, int resolve, char ** err_ret)
 {
   unsigned char socksreq[600];
-  int port, rc;
+  int port = 80, rc;
   unsigned short ip[4];
-  char *pos, host[1000], ip_addr[50];
+  char *pos, host[1024], ip_addr[50];
   int packetsize;
 
-  pos = strchr (in_host, ':');
-  if (pos)
+  strncpy (host, in_host, sizeof (host));
+  host[1023] = '\0';
+  if ((pos = strchr (host, ':')) != NULL)
     {
-      memcpy (host, in_host, pos - in_host);
+      *pos = '\0';
       port = atoi (pos + 1);
     }
-  else
-    {
-      strcpy_ck (host, in_host);
-      port = 80;
-    }
+
   socksreq[0] = 5; /* version */
   socksreq[1] = (user ? 2 : 1); /* methods supported */
   socksreq[2] = 0; /* no auth */
@@ -561,6 +555,11 @@ http_cli_negotiate_socks5 (dk_session_t * ses, char * in_host, char * user, char
       int hostname_len = strlen (host);
       socksreq[3] = 3; /* dns name */
       packetsize = (size_t)(5 + hostname_len + 2);
+      if (packetsize >= sizeof (socksreq))
+        {
+	  *err_ret = "Can not resolve target host name";
+	  return (HC_RET_ERR_ABORT);
+        }
       socksreq[4] = (char) hostname_len;
       memcpy(&socksreq[5], host, hostname_len);
       *((unsigned short*)&socksreq[hostname_len+5]) = htons((unsigned short)port);
@@ -859,6 +858,9 @@ http_client_load_ssl_ca_certs (SSL * ssl, const char *certs_pem)
   if (NULL == certs_pem) /* no CA list is given */
     goto end;
 
+  if (!strcmp (certs_pem, INTERNAL_CA_STORE) && xenc_load_verify_CA_list (ssl_ctx, certs_pem))
+    return;
+
   if ((in = BIO_new (BIO_s_mem())) == NULL)
     goto end;
 
@@ -961,7 +963,76 @@ http_cli_connect (http_cli_ctx * ctx)
 	  char * pkcs12_file = ctx->hcctx_pkcs12_file;
 	  char * pass = ctx->hcctx_cert_pass;
 	  timeout_t to = {100, 0};
+          int block = 0;
 
+	  /*
+	   *  Currently this only works for HTTP/HTTPS based proxies like squid.
+	   *
+	   *  TODO: check for SOCKS4 and SOCKS5
+	   */
+	  if (ctx->hcctx_proxy.hcp_proxy && ctx->hcctx_proxy.hcp_socks_ver == 0)
+	    {
+	      char tmp[1024];
+	      int ret;
+
+	      /*
+	       *  Send a CONNECT request
+	       */
+	      CATCH_WRITE_FAIL (ctx->hcctx_http_out)
+	      {
+		snprintf (tmp, sizeof (tmp), "CONNECT %s HTTP/%d.%d\r\n", ctx->hcctx_host, ctx->hcctx_http_maj, ctx->hcctx_http_min);
+		SES_PRINT (ctx->hcctx_http_out, tmp);
+
+		snprintf (tmp, sizeof (tmp), "Host: %s\r\n", ctx->hcctx_host);
+		SES_PRINT (ctx->hcctx_http_out, tmp);
+
+		snprintf (tmp, sizeof (tmp), "User-Agent: %s\r\n", "virtuoso");
+		SES_PRINT (ctx->hcctx_http_out, tmp);
+
+		snprintf (tmp, sizeof (tmp), "Proxy-Connection: %s\r\n", "Keep-Alive");
+		SES_PRINT (ctx->hcctx_http_out, tmp);
+
+		if (NULL != ctx->hcctx_proxy.hcp_user)
+		  {
+		    char enc_buf[2048];
+		    uint32 len;
+
+		    snprintf (tmp, sizeof (tmp), "%s:%s", ctx->hcctx_proxy.hcp_user, ctx->hcctx_proxy.hcp_pass ? ctx->hcctx_proxy.hcp_pass : "");
+		    len = strlen (tmp) + 1;
+		    SES_PRINT (ctx->hcctx_http_out, "Proxy-Authorization: Basic ");
+		    encode_base64 (tmp, enc_buf, len);
+		    SES_PRINT (ctx->hcctx_http_out, enc_buf);
+		    SES_PRINT (ctx->hcctx_http_out, "\r\n");
+		  }
+
+		/* Send empty body */
+		SES_PRINT (ctx->hcctx_http_out, "\r\n");
+
+		strses_write_out (ctx->hcctx_req_body, ctx->hcctx_http_out);
+		session_flush_1 (ctx->hcctx_http_out);
+	      }
+	      FAILED
+	      {
+		if (ctx->hcctx_http_out_cached)
+		  {
+		    ctx->hcctx_http_out_cached = 0;
+		    F_SET (ctx, (HC_F_RETRY | HC_F_REPLY_READ | HC_F_HDRS_READ));
+		  }
+		else
+		  return (http_cli_hook_dispatch (ctx, HC_HTTP_WRITE_ERR));
+	      }
+	      END_WRITE_FAIL (ctx->hcctx_http_out);
+
+	      /* Read response header */
+	      CATCH_ABORT (http_cli_read_resp, ctx, ret);
+
+	      /* Read response body */
+	      CATCH_ABORT (http_cli_read_resp_hdrs, ctx, ret);
+	    }
+
+	  /*
+	   *  Switch socket to SSL protocol
+	   */
 	  ctx->hcctx_ssl_method = SSLv23_client_method();
 	  ctx->hcctx_ssl_ctx = SSL_CTX_new (ctx->hcctx_ssl_method);
 	  ctx->hcctx_ssl = SSL_new (ctx->hcctx_ssl_ctx);
@@ -988,7 +1059,6 @@ http_cli_connect (http_cli_ctx * ctx)
 	  }
 #endif
 
-	  session_set_control (ctx->hcctx_http_out->dks_session, SC_TIMEOUT, (char *)(&to), sizeof (timeout_t));
 	  SSL_set_fd (ctx->hcctx_ssl, dst);
 
 	  if (ctx->hcctx_ssl_insecure)
@@ -1014,21 +1084,36 @@ http_cli_connect (http_cli_ctx * ctx)
 	      SSL_CTX_set_session_id_context(ctx->hcctx_ssl_ctx,
 		  (const unsigned char *)&session_id_context, sizeof session_id_context);
 	    }
+          block = 0;
+          session_set_control (ctx->hcctx_http_out->dks_session, SC_BLOCKING, (char *)((void*)&block), sizeof (int));
 	  ssl_err = SSL_connect (ctx->hcctx_ssl);
-	  if (ssl_err != 1)
+          if (1 != ssl_err)
 	    {
+              int con_err;
 	      char err1[2048];
 	      err1[0] = 0;
-	      if (ERR_peek_error ())
-		{
-		  cli_ssl_get_error_string (err1, sizeof (err1));
-		}
-	      else
-		strcpy_ck (err1, "Cannot connect via HTTPS");
-	      ctx->hcctx_err = srv_make_new_error ("08001", "HTS01", "%s", err1);
+              con_err = SSL_get_error(ctx->hcctx_ssl, ssl_err);
+              if (SSL_ERROR_WANT_READ == con_err || SSL_ERROR_WANT_WRITE == con_err)
+                con_err = ssl_check_connect_timeout (ctx->hcctx_http_out->dks_session, &to, con_err);
+              if (SSL_ERROR_NONE == con_err)
+                ssl_err = 1;
+              else
+                {
+                  if (ERR_peek_error ())
+                    cli_ssl_get_error_string (err1, sizeof (err1));
+                  else
+                    strcpy_ck (err1, "Cannot connect via HTTPS");
+                  ctx->hcctx_err = srv_make_new_error ("08001", "HTS01", "%s", err1);
+                }
 	    }
-	  else
-	    tcpses_to_sslses (ctx->hcctx_http_out->dks_session, ctx->hcctx_ssl);
+	  if (1 == ssl_err)
+            {
+              int rc;
+              block = 1;
+              rc = session_set_control (ctx->hcctx_http_out->dks_session, SC_BLOCKING, (char *)((void*)&block), sizeof (int));
+              rc = session_set_control (ctx->hcctx_http_out->dks_session, SC_TIMEOUT, (char *)(&to), sizeof (timeout_t));
+              tcpses_to_sslses (ctx->hcctx_http_out->dks_session, ctx->hcctx_ssl);
+            }
 error_in_ssl:
 	  if (ctx->hcctx_err)
 	    {
@@ -1136,6 +1221,11 @@ http_cli_print_patched_url (dk_session_t * ses, caddr_t url)
     }
 }
 
+#define HT_MAY_HAVE_BODY(ctx) (HC_METHOD_GET != (ctx)->hcctx_method && \
+                               HC_METHOD_HEAD != (ctx)->hcctx_method && \
+                               HC_METHOD_DELETE != (ctx)->hcctx_method && \
+                               HC_METHOD_OPTIONS != (ctx)->hcctx_method)
+
 HC_RET
 http_cli_send_req (http_cli_ctx * ctx)
 {
@@ -1145,6 +1235,7 @@ http_cli_send_req (http_cli_ctx * ctx)
 
   CATCH_WRITE_FAIL (ctx->hcctx_http_out)
     {
+      int64 request_len = strses_length (ctx->hcctx_req_body);
       SES_PRINT (ctx->hcctx_http_out, http_cli_get_method_string (ctx));
       SES_PRINT (ctx->hcctx_http_out, " ");
       http_cli_print_patched_url (ctx->hcctx_http_out, http_cli_get_doc_str (ctx));
@@ -1154,9 +1245,12 @@ http_cli_send_req (http_cli_ctx * ctx)
       http_cli_std_hdrs (ctx);
       strses_write_out (ctx->hcctx_pub_req_hdrs, ctx->hcctx_http_out);
       strses_write_out (ctx->hcctx_prv_req_hdrs, ctx->hcctx_http_out);
-      snprintf (req_tmp, sizeof (req_tmp),
-	       "Content-Length: " BOXINT_FMT "\r\n\r\n", strses_length (ctx->hcctx_req_body));
-      SES_PRINT (ctx->hcctx_http_out, req_tmp);
+      if (request_len > 0 || HT_MAY_HAVE_BODY(ctx))
+        {
+          snprintf (req_tmp, sizeof (req_tmp), "Content-Length: " BOXINT_FMT "\r\n", request_len);
+          SES_PRINT (ctx->hcctx_http_out, req_tmp);
+        }
+      SES_PRINT (ctx->hcctx_http_out, "\r\n");
       strses_write_out (ctx->hcctx_req_body, ctx->hcctx_http_out);
       session_flush_1 (ctx->hcctx_http_out);
     }
@@ -1237,6 +1331,11 @@ http_cli_parse_resp_hdr (http_cli_ctx * ctx, char* hdr, int num_chars)
     {
       ctx->hcctx_keep_alive = 0;
       ctx->hcctx_close = 1;
+      return (HC_RET_OK);
+    }
+  if (!strnicmp ("Content-Type:", hdr, 13) && nc_strstr ((unsigned char *) hdr, (unsigned char *) "text/event-stream"))
+    {
+      ctx->hcctx_is_event_stream = 1;
       return (HC_RET_OK);
     }
   if (NULL != ctx->hcctx_proxy.hcp_proxy && !strnicmp ("Proxy-Connection:", hdr, 17)
@@ -1372,6 +1471,153 @@ http_cli_get_resp_headers (http_cli_ctx * ctx)
 }
 
 HC_RET
+http_cli_sse_evt_hook (http_cli_ctx * ctx, dk_session_t * ses, char * line, int readed)
+{
+  static query_t * qr = NULL;
+  query_instance_t * qi = (query_instance_t *)ctx->hcctx_qst;
+  query_t * proc;
+  caddr_t err = NULL, data, ret = NULL;
+  caddr_t p_name = ctx->hcctx_callback, *args = ctx->hcctx_callback_args;
+  client_connection_t * cli = qi->qi_client;
+  local_cursor_t * lc = NULL;
+  const char * sse_ret_hook_flag = "HTTP_SSE_RET_FLAG";
+  caddr_t flag_ret, flag_ret_val;
+  int rc = HC_RET_OK;
+
+  if (readed > 1)
+    {
+      session_buffered_write (ses, line, readed);
+      return (HC_RET_OK);
+    }
+
+  if (!qr)
+    qr = sql_compile_static ("call (?) (?, ?)", bootstrap_cli, &err, SQLC_DEFAULT);
+
+  if (err)
+    goto err_end;
+
+  if (!p_name || !(proc = (query_t *)sch_name_to_object (wi_inst.wi_schema, sc_to_proc, p_name, NULL, "dba", 0)))
+    {
+      err = srv_make_new_error ("37000", "HTHN0", "No such procedure `%s`", p_name);
+      goto err_end;
+    }
+
+  if (proc->qr_to_recompile)
+    proc = qr_recompile (proc, &err);
+
+  if (err)
+    goto err_end;
+  /* call evt handler */
+  data = strses_string(ses); /* check len, events should be small chunks but anyway must check */
+  err = qr_quick_exec (qr, cli, NULL, &lc, 3,
+      ":0", p_name, QRP_STR,
+      ":1", data, QRP_RAW,
+      ":2", box_copy_tree(args), QRP_RAW);
+  if (!err && lc && DV_ARRAY_OF_POINTER == DV_TYPE_OF (lc->lc_proc_ret) && BOX_ELEMENTS ((caddr_t *)lc->lc_proc_ret) > 1)
+    {
+      ret = ((caddr_t *)(lc->lc_proc_ret))[1];
+      if (ret && DV_STRINGP(ret))
+        session_buffered_write ((dk_session_t *)ctx->hcctx_resp_body, ret, box_length(ret) - 1);
+    }
+
+err_end:
+  if (lc)
+    lc_free (lc);
+  /* ck err */
+  strses_flush(ses);
+  if (err && (err != (caddr_t) SQL_NO_DATA_FOUND))
+    {
+      if (0 != strncmp (ERR_STATE (err), "VSPRT", 5))
+        {
+          ctx->hcctx_err = err;
+          return (HC_RET_ERR_ABORT);
+        }
+      else
+        {
+          dk_free_tree(err);
+          return (HC_RET_STOP);
+        }
+    }
+  if (id_hash_get_and_remove (cli->cli_globals, (caddr_t) &sse_ret_hook_flag, (caddr_t)(&flag_ret), (caddr_t)(&flag_ret_val)))
+    {
+      rc = unbox (flag_ret_val) ? HC_RET_STOP : HC_RET_OK;
+      dk_free_box (flag_ret);
+      dk_free_box (flag_ret_val);
+    }
+  return rc;
+}
+
+HC_RET
+http_cli_read_sse_content (http_cli_ctx * ctx)
+{
+  char line [DKSES_OUT_BUFFER_LENGTH];
+  int remaining_chunk_size = 0, chunked = ctx->hcctx_is_chunked;
+  int readed = 0, rc = HC_RET_OK;
+  dk_session_t * ses = ctx->hcctx_http_out, * data = strses_allocate (), * res = strses_allocate ();
+
+  dk_free_tree (ctx->hcctx_resp_body);
+  ctx->hcctx_resp_body = (caddr_t)res;
+  CATCH_READ_FAIL (ses)
+    {
+      for (;;)
+	{
+          readed = dks_read_line (ses, line, sizeof (line));
+          if (chunked)
+            {
+              if (1 != sscanf (line,"%x", (unsigned *)(&remaining_chunk_size)))
+                break;
+              if (!remaining_chunk_size && readed) /*last chunk*/
+                {
+                  readed = dks_read_line (ses, line, sizeof (line));
+                  break;
+                }
+              while (remaining_chunk_size > 0)
+                {
+                  char c = '\0', c0;
+                  int chars_read, to_read;
+                  to_read = MIN (remaining_chunk_size, (sizeof (line) - 1));
+                  chars_read = 0;
+                  do
+                    {
+                      c0 = c;
+                      c = session_buffered_read_char(ses);
+                      to_read--;
+                      remaining_chunk_size--;
+                      line[chars_read++] = c;
+                    }
+                  while (0x0a != c && to_read > 0);
+                  if (0x0a != c)
+                    {
+                      session_buffered_write (data, line, chars_read);
+                      if (remaining_chunk_size > 0)
+                        continue;
+                      else
+                        break;
+                    }
+                  /* catch if SSE use cr/lf between events */
+                  if (2 == chars_read && 0x0d == c0 && 0x0a == c)
+                    chars_read--;
+                  if (HC_RET_OK != (rc = http_cli_sse_evt_hook (ctx, data, line, chars_read)))
+                    goto err_ret;
+                }
+              readed = dks_read_line (ses, line, sizeof (line)); /* lb after chunk */
+            }
+          else
+            {
+              if (HC_RET_OK != (rc = http_cli_sse_evt_hook (ctx, data, line, readed)))
+                goto err_ret;
+            }
+	}
+    }
+  END_READ_FAIL (ses);
+err_ret:
+  if (HC_RET_STOP == rc) /* we don't want to read more, signalled from hook, just disconnect */
+    rc = HC_RET_OK;
+  strses_free (data);
+  return (rc);
+}
+
+HC_RET
 http_cli_read_resp_body (http_cli_ctx * ctx)
 {
   int ret;
@@ -1389,7 +1635,12 @@ http_cli_read_resp_body (http_cli_ctx * ctx)
 
   CATCH_READ_FAIL (ctx->hcctx_http_out)
     {
-      if (ctx->hcctx_is_chunked)
+      if (ctx->hcctx_is_event_stream && NULL != ctx->hcctx_callback)
+        {
+          if (HC_RET_OK != (ret = http_cli_read_sse_content (ctx)))
+            return ret;
+        }
+      else if (ctx->hcctx_is_chunked)
 	{
 	  dk_free_tree (ctx->hcctx_resp_body);
 	  ctx->hcctx_resp_body =
@@ -1528,7 +1779,7 @@ http_cli_auth_new_cnonce (void)
   long x;
 
   memset (enc_buf, 0, sizeof (enc_buf));
-  t = get_msec_real_time ();
+  t = (long) get_msec_real_time ();
   x = rand () * rand ();
 
   snprintf (tmp_buf, sizeof (tmp_buf), "%08ldMopolla kuuhun!%08ld", t, x);
@@ -1892,6 +2143,52 @@ else \
     return (HC_RET_ERR_ABORT); \
   }
 
+static char * http_cookie_av[] = { "comment", "discard", "domain", "path", "max-age", "expires", "secure", "version", "httponly", "samesite", NULL };
+
+static
+void http_get_cookies (caddr_t cookie_str, int split_flag, dk_set_t * set, dk_set_t * reserved)
+{
+  char *tmp, *tok_s = NULL, *tok, *sep;
+  caddr_t in;
+  char ** cookie_av = http_cookie_av;
+
+  in = box_dv_short_string (cookie_str);
+  tok = strtok_r (in, ";", &tok_s);
+  while (tok)
+    {
+      while (*tok && isspace (*tok))
+	tok++;
+      if (tok_s)
+	tmp = tok_s - 2;
+      else if (tok && strlen (tok) > 1)
+	tmp = tok + strlen (tok) - 1;
+      else
+	tmp = NULL;
+      while (tmp && tmp >= tok && isspace (*tmp))
+	*(tmp--) = 0;
+      sep = strchr (tok, '=');
+      if (NULL != sep)
+        *sep++ = 0;
+      for (cookie_av = http_cookie_av; split_flag && NULL != cookie_av[0]; cookie_av++)
+        {
+          if (0 == stricmp (tok, cookie_av[0])) /* reserved names */
+            break;
+        }
+      if (!split_flag || NULL == cookie_av[0])
+        {
+          dk_set_push (set, box_dv_short_string (tok));
+          dk_set_push (set, sep ? box_dv_short_string (sep) : NEW_DB_NULL);
+        }
+      else if (reserved)
+        {
+          dk_set_push (reserved, box_dv_short_string (tok));
+          dk_set_push (reserved, sep ? box_dv_short_string (sep) : NEW_DB_NULL);
+        }
+      tok = strtok_r (NULL, ";", &tok_s);
+    }
+  dk_free_box (in);
+}
+
 
 /* Pick the last of the strongest authentication schemes offered */
 
@@ -2005,11 +2302,45 @@ http_cli_parse_authorize_headers (http_cli_ctx * ctx)
 }
 
 HC_RET
+http_cli_std_handle_upgrade (http_cli_ctx * ctx, caddr_t parm, caddr_t ret_val, caddr_t err_ret)
+{
+  int ret;
+  char *s = NULL, *last;
+  caddr_t url, loc, err = NULL, cookie_header = NULL;
+  dk_set_t cookies = NULL;
+  CATCH_ABORT (http_cli_read_resp_hdrs, ctx, ret);
+  DO_SET (caddr_t, hdr, &ctx->hcctx_resp_hdrs)
+    {
+      if (!strnicmp ("Upgrade:", hdr, 8))
+        {
+	  last = hdr + box_length (hdr) - 3;
+	  s = hdr + 8;
+	  s = skip_lwsp (s, last);
+          if (!strnicmp ("websocket", s, 9))
+            ctx->hcctx_connection_upgrade = HC_U_WEBSOCKET;
+          else
+            ctx->hcctx_connection_upgrade = HC_U_UNKNOWN;
+        }
+      else if (!strnicmp ("Connection:", hdr, 11))
+        {
+	  last = hdr + box_length (hdr) - 3;
+	  s = hdr + 11;
+	  s = skip_lwsp (s, last);
+          if (!strnicmp ("upgrade", s, 7))
+            F_SET (ctx, HC_F_UPGRADE);
+        }
+    }
+  END_DO_SET ();
+  return (HC_RET_OK);
+}
+
+HC_RET
 http_cli_std_handle_redir (http_cli_ctx * ctx, caddr_t parm, caddr_t ret_val, caddr_t err_ret)
 {
   int ret;
   char *s = NULL, *last;
-  caddr_t url, loc, err = NULL;
+  caddr_t url, loc, err = NULL, cookie_header = NULL;
+  dk_set_t cookies = NULL;
   CATCH_ABORT (http_cli_read_resp_hdrs, ctx, ret);
   CATCH_ABORT (http_cli_read_resp_body, ctx, ret);
 
@@ -2021,7 +2352,7 @@ http_cli_std_handle_redir (http_cli_ctx * ctx, caddr_t parm, caddr_t ret_val, ca
 
   DO_SET (caddr_t, hdr, &ctx->hcctx_resp_hdrs)
     {
-      if (!strnicmp ("Location:", hdr, 9))
+      if (!s && !strnicmp ("Location:", hdr, 9))
 	{
 	  last = hdr + box_length (hdr) - 2;
 	  s = hdr + 10;
@@ -2031,8 +2362,11 @@ http_cli_std_handle_redir (http_cli_ctx * ctx, caddr_t parm, caddr_t ret_val, ca
 	      last[0] = 0;
 	      last--;
 	    }
-	  break;
 	}
+      else if (ctx->hcctx_accept_cookies && !strnicmp ("Set-Cookie:", hdr, 11))
+        http_get_cookies (hdr + 11, 1, &cookies, NULL);
+      if (NULL != s && !ctx->hcctx_accept_cookies) /* no need to continue looking if location found */
+        break;
     }
   END_DO_SET ();
 
@@ -2052,6 +2386,24 @@ http_cli_std_handle_redir (http_cli_ctx * ctx, caddr_t parm, caddr_t ret_val, ca
     url = box_copy (ctx->hcctx_url);
   if (url != loc)
     dk_free_box (loc);
+  if (NULL != cookies)
+    {
+      cookies = dk_set_nreverse(cookies);
+      SES_PRINT (ctx->hcctx_pub_req_hdrs, "Cookie:");
+      DO_KEYWORD_SET (k, caddr_t, v, &cookies)
+        {
+          SES_PRINT (ctx->hcctx_pub_req_hdrs, " ");
+          SES_PRINT (ctx->hcctx_pub_req_hdrs, k);
+          SES_PRINT (ctx->hcctx_pub_req_hdrs, "=");
+          if (DV_STRINGP(v))
+            SES_PRINT (ctx->hcctx_pub_req_hdrs, v);
+          SES_PRINT (ctx->hcctx_pub_req_hdrs, ";");
+        }
+      END_DO_SET();
+      SES_PRINT (ctx->hcctx_pub_req_hdrs, "\r\n");
+      dk_free_tree (list_to_array(cookies));
+      cookies = NULL;
+    }
   RELEASE (ctx->hcctx_host);
   RELEASE (ctx->hcctx_uri);
   RELEASE (ctx->hcctx_url);
@@ -2063,7 +2415,6 @@ http_cli_std_handle_redir (http_cli_ctx * ctx, caddr_t parm, caddr_t ret_val, ca
     {
       http_cli_ssl_cert (ctx, (caddr_t)"1");
       ctx->hcctx_ssl_insecure = '\1';
-      RELEASE (ctx->hcctx_proxy.hcp_proxy);
     }
   else if (!strnicmp (url, "http://", 7))
     {
@@ -2125,13 +2476,15 @@ http_cli_std_init (char * url, caddr_t * qst)
 {
   http_cli_ctx * ctx;
   http_cli_handler_frame_t * h;
+  QNCAST (query_instance_t, qi, qst);
+  uint32 cli_timeout = (qi && qi->qi_client && qi->qi_client->cli_http_client_req_timeout ? qi->qi_client->cli_http_client_req_timeout : 0);
 
   ctx = http_cli_ctx_init ();
 
   ctx->hcctx_http_maj = 1;
   ctx->hcctx_http_min = 1;
   ctx->hcctx_keep_alive = 1;
-  ctx->hcctx_timeout = 100;
+  ctx->hcctx_timeout = cli_timeout ? cli_timeout : http_default_client_req_timeout;
   ctx->hcctx_qst = qst;
 
   ctx->hcctx_url = box_string (url);
@@ -2156,6 +2509,8 @@ http_cli_std_init (char * url, caddr_t * qst)
 
   h = http_cli_make_handler_frame (http_cli_handle_socks_conn_post, NULL, NULL, NULL);
   http_cli_push_hook (ctx, HC_HTTP_CONN_POST, h);
+
+  http_cli_push_resp_evt (ctx, 101, http_cli_make_handler_frame (http_cli_std_handle_upgrade, NULL, NULL, NULL));
 
   return (ctx);
 }
@@ -2262,6 +2617,7 @@ http_cli_req_init (http_cli_ctx * ctx)
       strses_flush (ctx->hcctx_prv_req_hdrs);
 
       ctx->hcctx_is_chunked = 0;
+      ctx->hcctx_is_event_stream = 0;
       ctx->hcctx_respcode = 0;
       ctx->hcctx_resp_content_length = 0;
       ctx->hcctx_resp_content_len_recd = 0;
@@ -2296,6 +2652,7 @@ http_cli_resp_reset (http_cli_ctx * ctx)
   strses_flush (ctx->hcctx_prv_req_hdrs);
 
   ctx->hcctx_is_chunked = 0;
+  ctx->hcctx_is_event_stream = 0;
   ctx->hcctx_respcode = 0;
   ctx->hcctx_resp_content_length = 0;
   ctx->hcctx_resp_content_len_recd = 0;
@@ -2401,6 +2758,8 @@ http_cli_init_std_redir (http_cli_ctx* ctx, int r)
   http_cli_push_resp_evt (ctx, 301, http_cli_make_handler_frame (http_cli_std_handle_redir, NULL, NULL, NULL));
   http_cli_push_resp_evt (ctx, 302, http_cli_make_handler_frame (http_cli_std_handle_redir, NULL, NULL, NULL));
   http_cli_push_resp_evt (ctx, 303, http_cli_make_handler_frame (http_cli_std_handle_redir, NULL, NULL, NULL));
+  http_cli_push_resp_evt (ctx, 307, http_cli_make_handler_frame (http_cli_std_handle_redir, NULL, NULL, NULL));
+  http_cli_push_resp_evt (ctx, 308, http_cli_make_handler_frame (http_cli_std_handle_redir, NULL, NULL, NULL));
   ctx->hcctx_redirects = r;
   return (HC_RET_OK);
 }
@@ -2424,6 +2783,8 @@ http_cli_init_std_redir (http_cli_ctx* ctx, int r)
    13. insecure option
    14. ret argument index in args ssls
    15. how many redirects to follow
+   16. SSE event PL callback name
+   17. ^^^ args
 In bif_http_client_impl, arguments qst, err_ret, args and me are traditional
 All arguments except the URL can be db NULLs in bif call, NULL pointers in _impl call.
 */
@@ -2433,18 +2794,19 @@ bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, co
     caddr_t url, caddr_t uid, caddr_t pwd, caddr_t method, caddr_t http_hdr, caddr_t body,
     caddr_t cert, caddr_t pk_pass, uint32 time_out, int time_out_is_null, caddr_t proxy, caddr_t ca_certs, int insecure,
     int ret_arg_index,
-    int follow_redirects)
+    int follow_redirects,
+    caddr_t callback, caddr_t * callback_args, int accept_cookies)
 {
   http_cli_ctx * ctx;
   const char* ua_id = http_client_id_string;
-  caddr_t ret = NULL;
+  volatile caddr_t ret = NULL;
   caddr_t _err_ret;
   int meth = HC_METHOD_GET;
   dk_set_t hdrs = NULL;
   caddr_t *head = NULL;
   int to_free_head = 1;
   dtp_t dtp;
-  long start_dt;
+  time_msec_t start_dt;
 
 
   ctx = http_cli_std_init (url, qst);
@@ -2454,6 +2816,7 @@ bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, co
     http_cli_init_std_auth (ctx, uid, pwd);
   if (follow_redirects)
     http_cli_init_std_redir (ctx, follow_redirects);
+  ctx->hcctx_accept_cookies = accept_cookies;
 
   if (method)
     {
@@ -2498,14 +2861,12 @@ bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, co
       if (1 == strlen (cert) && 1 == atoi (cert))
 	ctx->hcctx_ssl_insecure = '\1';
       else
-      ctx->hcctx_ssl_insecure = (char) insecure;
-      RELEASE (ctx->hcctx_proxy.hcp_proxy);
+        ctx->hcctx_ssl_insecure = (char) insecure;
     }
   else if (!strnicmp (url, "https://", 8))
     {
       http_cli_ssl_cert (ctx, (caddr_t)"1");
       ctx->hcctx_ssl_insecure = '\1';
-      RELEASE (ctx->hcctx_proxy.hcp_proxy);
     }
 #endif
   if (!time_out_is_null) /* timeout */
@@ -2520,6 +2881,11 @@ bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, co
       http_cli_ctx_free (ctx);
       return ret;
     }
+  if (callback)
+    {
+      ctx->hcctx_callback = callback;
+      ctx->hcctx_callback_args = callback_args;
+    }
 
   IO_SECT(qst);
 
@@ -2529,11 +2895,19 @@ bif_http_client_impl (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, co
   start_dt = get_msec_real_time ();
   if (!http_cli_main (ctx))
     ret = box_copy_tree (ctx->hcctx_resp_body);
+  if (HC_U_WEBSOCKET == ctx->hcctx_connection_upgrade)
+    {
+      dk_free_tree (ret);
+      ret = dk_alloc_box (2 * sizeof (caddr_t), DV_CONNECTION);
+      ((caddr_t *)ret)[0] = (caddr_t) ctx->hcctx_http_out;
+      ((caddr_t *)ret)[1] = (caddr_t) 1L;
+      ctx->hcctx_http_out = NULL;
+    }
   if (NULL == ret)
     ret = box_dv_short_string ("");
 
   if (prof_on)
-    prof_exec (NULL, "http_client", get_msec_real_time () - start_dt, 1);
+    prof_exec (NULL, "http_client", (long) (get_msec_real_time () - start_dt), 1);
 
 #ifdef DEBUG
   fprintf (stderr, "bif_http_client: State: %d\n", ctx->hcctx_state);
@@ -2602,9 +2976,9 @@ bif_http_client (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   caddr_t uid = NULL, pwd = NULL;
   caddr_t http_hdr = NULL, body = NULL, method = NULL;
   uint32 time_out = 0;
-  int time_out_is_null = 1, insecure = 0, follow_redirects = 0;
+  int time_out_is_null = 1, insecure = 0, follow_redirects = 0, accept_cookies = 0;
   caddr_t cert = NULL, pk_pass = NULL;
-  caddr_t proxy = NULL, ca_certs = NULL;
+  caddr_t proxy = NULL, ca_certs = NULL, cbk = NULL, *cbk_args = NULL;
 
   if (BOX_ELEMENTS (args) > 1)
     {
@@ -2656,7 +3030,17 @@ bif_http_client (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
       int dummy = 0;
       follow_redirects = (int) bif_long_or_null_arg (qst, args, 13, me, &dummy);
     }
-  return bif_http_client_impl (qst, err_ret, args, me, url, uid, pwd, method, http_hdr, body, cert, pk_pass, time_out, time_out_is_null, proxy, ca_certs, insecure, 8, follow_redirects);
+  if (BOX_ELEMENTS (args) > 14) /* callback */
+    {
+      cbk = bif_string_or_null_arg (qst, args, 14, me);
+      cbk_args = (caddr_t *)bif_strict_array_or_null_arg (qst, args, 15, me);
+    }
+  if (BOX_ELEMENTS (args) > 16) /* accept_cookies */
+    {
+      int dummy = 0;
+      accept_cookies = (int) bif_long_or_null_arg (qst, args, 16, me, &dummy);
+    }
+  return bif_http_client_impl (qst, err_ret, args, me, url, uid, pwd, method, http_hdr, body, cert, pk_pass, time_out, time_out_is_null, proxy, ca_certs, insecure, 8, follow_redirects, cbk, cbk_args, accept_cookies);
 }
 
 caddr_t
@@ -2890,7 +3274,22 @@ bif_http_get (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     }
   if (n_args > 7) /* time-out */
     to = (uint32) bif_long_or_null_arg (qst, args, 7, me, &to_is_null);
-  return bif_http_client_impl (qst, err_ret, args, me, uri, NULL, NULL, method, header, body, NULL, NULL, to, to_is_null, proxy, NULL, 0, 1, follow_redirects);
+  return bif_http_client_impl (qst, err_ret, args, me, uri, NULL, NULL, method, header, body, NULL, NULL, to, to_is_null, proxy, NULL, 0, 1, follow_redirects, NULL, NULL, 0);
+}
+
+caddr_t
+bif_http_cookie_to_vector (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
+{
+  const char *me = "http_cookie_to_vector";
+  caddr_t cookie_str = bif_string_or_uname_arg (qst, args, 0, me);
+  boxint split_flag = BOX_ELEMENTS_0 (args) > 1 ? bif_long_arg (qst, args, 1, me) : 0;
+  state_slot_t *ret_arg = (split_flag && BOX_ELEMENTS_0 (args) > 2 && ssl_is_settable (args[2])) ? args[2] : NULL;
+  dk_set_t set = NULL, reserved = NULL;
+
+  http_get_cookies (cookie_str, split_flag, &set, ret_arg ? &reserved : NULL);
+  if (NULL != ret_arg)
+    qst_set (qst, ret_arg, list_to_array (dk_set_nreverse (reserved)));
+  return list_to_array (dk_set_nreverse (set));
 }
 
 void
@@ -2900,4 +3299,5 @@ bif_http_client_init (void)
   bif_define_ex ("http_client_internal", bif_http_client, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define_ex ("http_pipeline", bif_http_pipeline, BMD_RET_TYPE, &bt_any, BMD_DONE);
   bif_define_ex ("http_get", bif_http_get, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("http_cookie_to_vector", bif_http_cookie_to_vector, BMD_RET_TYPE, &bt_any, BMD_DONE);
 }

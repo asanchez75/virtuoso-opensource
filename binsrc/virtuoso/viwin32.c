@@ -9,7 +9,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *  
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *  
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -112,12 +112,12 @@ extern int in_crash_dump;
 
 void new_cfg_replace_log (char *new_log);
 void new_cfg_set_checkpoint_interval (int32 f);
-void new_db_read_cfg (caddr_t *it, char *mode);
-void new_dbs_read_cfg (caddr_t *it, char *mode);
+void new_db_read_cfg (caddr_t *it, const char *mode);
+void new_dbs_read_cfg (caddr_t *it, const char *mode);
 dk_set_t new_cfg_read_storages (caddr_t **temp_storage);
 void sf_make_auto_cp (void);
 void srv_set_cfg (void (*replace_log)(char *str), void (*set_checkpoint_interval)(int32 f),
-      		 void (*read_cfg)(caddr_t * it, char *mode), void (*s_read_cfg)(caddr_t * it, char *mode),
+      		 void (*read_cfg)(caddr_t * it, const char *mode), void (*s_read_cfg)(caddr_t * it, const char *mode),
     		 dk_set_t (*read_storages)(caddr_t **temp_file));
 
 void srv_global_init (char *mode);

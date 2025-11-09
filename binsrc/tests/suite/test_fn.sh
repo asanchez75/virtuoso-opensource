@@ -6,7 +6,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #  
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #  
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -113,6 +113,24 @@ export HOST
 fi
 
 export SERVER ISQL PORT DSN SERVICE BINDIR PATH DEBUG
+
+#
+#  Netstat
+#
+NETSTAT=`which netstat 2>/dev/null`
+if test -z "$NETSTAT"
+then
+    NETSTAT=`which ss 2>/dev/null`
+fi
+if test -z "$NETSTAT"
+then
+    echo ""
+    echo "***"
+    echo "*** ERROR: Please make sure either netstat or ss is installed and in your PATH before running the test suite."
+    echo "***"
+    exit 1
+fi
+export NETSTAT
 
 #===========================================================================
 #  Standard functions
@@ -234,8 +252,8 @@ START_SERVER()
     starts=`date | cut -f 3 -d :|cut -f 1 -d " "`
     while [ "z$stat" != "z" -a $timeout -gt 0 ]
     do
-	sleep 1
-	stat=`netstat -an | grep "[\.\:]$port " | grep LISTEN`
+	sleep 5
+	stat=`$NETSTAT -an 2>/dev/null | grep "[\.\:]$port " | grep LISTEN`
 
 	nowh=`date | cut -f 2 -d :`
 	nows=`date | cut -f 3 -d : | cut -f 1 -d " "`
@@ -315,13 +333,13 @@ START_SERVER()
 	fi
 	while true
 	do
-	    stat=`netstat -an | grep "[\.\:]$port " | grep LISTEN`
+            sleep 5
+	    stat=`$NETSTAT -an 2>/dev/null | grep "[\.\:]$port " | grep LISTEN`
 	    if [ "z$stat" != "z" ]
 	    then
 		LOG "PASSED: Virtuoso Server successfully started on port $port"
 		return 0
 	    fi
-            sleep 1
 	    nowh=`date | cut -f 2 -d :`
 	    nows=`date | cut -f 3 -d : | cut -f 1 -d " "`
 
@@ -342,13 +360,13 @@ CHECK_PORT()
   port=$1
   while true
   do
-    stat=`netstat -an | grep "[\.\:]$port " | grep LISTEN`
+    sleep 5
+    stat=`$NETSTAT -an 2>/dev/null | grep "[\.\:]$port " | grep LISTEN`
     if [ "z$stat" = "z" ]
     then
 	LOG "PASSED: Port $port is not listened by any process"
 	return 0
     fi
-    sleep 1
     nowh=`date | cut -f 2 -d :`
     nows=`date | cut -f 3 -d : | cut -f 1 -d " "`
 

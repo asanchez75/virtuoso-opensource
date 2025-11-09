@@ -5,7 +5,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -253,7 +253,7 @@ if ('' <> action_info)
 	http('</TABLE><BR />');
 }
 	http('<TABLE BORDER="0" CELLPADDING="2" CELLSPACING="0">');
-		if (0 = cfg_item_value (virtuoso_ini_path(),'HTTPServer','NewsServerPort'))
+		if (0 = virtuoso_ini_item_value ('HTTPServer','NewsServerPort'))
                   {
 
 

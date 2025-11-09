@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -715,7 +715,7 @@ xp_free (xparse_ctx_t * xp)
 caddr_t
 xml_make_tree (query_instance_t * qi, caddr_t text, caddr_t *err_ret, const char *enc, lang_handler_t *lh, struct dtd_s **ret_dtd)
 {
-  int dtp_of_text = box_tag(text);
+  int dtp_of_text = DV_TYPE_OF(text);
   int text_strg_is_wide = 0;
   dk_set_t top;
   caddr_t tree;
@@ -864,7 +864,7 @@ make_tree:
 caddr_t
 xml_make_tree_with_ns (query_instance_t * qi, caddr_t text, caddr_t *err_ret, const char *enc, lang_handler_t *lh, id_hash_t ** nss, id_hash_t ** id_cache)
 {
-  int dtp_of_text = box_tag(text);
+  int dtp_of_text = DV_TYPE_OF(text);
   int text_strg_is_wide = 0;
   dk_set_t top;
   caddr_t tree;
@@ -1481,7 +1481,7 @@ xp_element_change (void *userdata, char * name, vxml_parser_attrdata_t *attrdata
 int
 xml_set_xml_read_iter (query_instance_t * qi, caddr_t text, xml_read_iter_env_t *xrie, const char **enc_ret)
 {
-  int dtp_of_text = box_tag (text);
+  int dtp_of_text = DV_TYPE_OF (text);
   if ((DV_BLOB_HANDLE == dtp_of_text) || (DV_BLOB_WIDE_HANDLE == dtp_of_text))
     {
       blob_handle_t *bh = (blob_handle_t *) text;
@@ -1536,7 +1536,7 @@ xml_set_xml_read_iter (query_instance_t * qi, caddr_t text, xml_read_iter_env_t 
 caddr_t
 xml_make_mod_tree (query_instance_t * qi, caddr_t text, caddr_t *err_ret, long html_mode, caddr_t uri, const char *enc, lang_handler_t *lh, caddr_t dtd_config, dtd_t **ret_dtd, id_hash_t **ret_id_cache, xml_ns_2dict_t *ret_ns_2dict)
 {
-  int dtp_of_text = box_tag (text);
+  int dtp_of_text = DV_TYPE_OF (text);
   dk_set_t top;
   caddr_t *root_elt_head, tree;
   vxml_parser_config_t config;
@@ -3794,7 +3794,7 @@ box_cast_to_UTF8_xsd (caddr_t *qst, caddr_t data)
 make_double:
   if (!isfinite (boxdbl))
     return box_dv_short_string (isnan (boxdbl) ? "NaN" : ((boxdbl > 0.0) ? "INF" : "-INF"));
-  buffill = sprintf (tmpbuf, "%lg", boxdbl);
+  buffill = sprintf (tmpbuf, DOUBLE_G_STAR_FMT, DOUBLE_G_LEN, boxdbl);
   if ((NULL == strchr (tmpbuf, '.')) && (NULL == strchr (tmpbuf, 'E')) && (NULL == strchr (tmpbuf, 'e')))
     {
       strcpy (tmpbuf+buffill, ".0");
@@ -4264,6 +4264,8 @@ bif_xte_nodebld_final_impl (caddr_t * qst, state_slot_t ** args, int plain_retur
 caddr_t
 bif_xte_nodebld_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
+  if (1 > BOX_ELEMENTS(args))
+    sqlr_new_error ("22003", "SRXXX", "Too few arguments for xte_nodebld_acc");
   return bif_xte_nodebld_acc_impl (qst, args, 0, ((caddr_t **)(QST_GET_ADDR (qst, args[0]))));
 }
 
@@ -4271,6 +4273,8 @@ bif_xte_nodebld_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 caddr_t
 bif_xte_nodebld_xmlagg_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 {
+  if (1 > BOX_ELEMENTS(args))
+    sqlr_new_error ("22003", "SRXXX", "Too few arguments for xte_nodebld_xmlagg_acc");
   return bif_xte_nodebld_acc_impl (qst, args, 1, ((caddr_t **)(QST_GET_ADDR (qst, args[0]))));
 }
 
@@ -4308,7 +4312,7 @@ bif_int_vectorbld_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   int argcount;			/* number of arguments in the call */
   int arg_inx;			/* index of current argument */
   int new_filled_count;		/* value of filled_count at the end of the procedure */
-  int64 *acc = bif_array_arg (qst, args, 0, "int_vector_agg");
+  int64 *acc = (int64 *) bif_array_arg (qst, args, 0, "int_vector_agg");
   caddr_t *dst;
   qi_signal_if_trx_error ((query_instance_t *) qst);
   if (1 > BOX_ELEMENTS (args))
@@ -4318,7 +4322,7 @@ bif_int_vectorbld_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   if (NULL == acc)
     {
       acc = (int64 *) dk_alloc_box_zero (sizeof (int64) * 15 /*  2^n - 1 */ , DV_ARRAY_OF_LONG);
-      qst_set (qst, args[0], acc);
+      qst_set (qst, args[0], (caddr_t) acc);
     }
   filled_count = acc[0];
   acc_length = BOX_ELEMENTS (acc);
@@ -4335,22 +4339,22 @@ bif_int_vectorbld_acc (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     sqlr_new_error ("22003", "SR346", "Out of memory allocation limits: the composed vector contains too many items");
   if (acc_length != new_acc_length)
     {
-      caddr_t new_acc;
-      if (NULL == (new_acc = dk_try_alloc_box (sizeof (int64) * new_acc_length, DV_ARRAY_OF_LONG)))
+      int64 * new_acc;
+      if (NULL == (new_acc = (int64 *) dk_try_alloc_box (sizeof (int64) * new_acc_length, DV_ARRAY_OF_LONG)))
 	qi_signal_if_trx_error ((query_instance_t *) qst);
       memset (new_acc, 0, sizeof (int64) * new_acc_length);
       memcpy (new_acc, acc, sizeof (int64) * acc_length);
-      qst_set (qst, args[0], new_acc);
+      qst_set (qst, args[0], (caddr_t) new_acc);
       acc = new_acc;
       acc_length = new_acc_length;
     }
-  dst = acc + filled_count + 1;
+  dst = (caddr_t *) (acc + filled_count + 1);
   for (arg_inx = 1; arg_inx < argcount; arg_inx++)
     {
       caddr_t arg = QST_GET (qst, args[arg_inx]);
       if (DV_DB_NULL == DV_TYPE_OF (arg))
 	continue;
-      dst[0] = unbox_iri_int64 (arg);
+      dst[0] = (void *)(ptrlong)unbox_iri_int64 (arg);
       dst++;
     }
   /* Now we know what's the precise value of new_filled_count */
@@ -4368,7 +4372,7 @@ bif_int_vectorbld_final (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   int arg_ctr = BOX_ELEMENTS (args);
   if (1 > arg_ctr)
     sqlr_new_error ("22003", "SR444", "Too few arguments for vectorbld_final");
-  qst_swap_or_get_copy (qst, args[0], (int64 *) (&acc));
+  qst_swap_or_get_copy (qst, args[0], (caddr_t *) (&acc));
   filled_size = sizeof (int64) * acc[0];
   new_box = (caddr_t) dk_alloc_box (filled_size, DV_ARRAY_OF_LONG);
   memcpy (new_box, acc + 1, filled_size);

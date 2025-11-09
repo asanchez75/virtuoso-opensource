@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -434,7 +434,7 @@ itc_bad_len_ins (it_cursor_t * itc, db_buf_t ce, int64 delta, int dtp_cmp, int r
   if (1 || ASC_NUMBERS == dtp_cmp)
     return itc_num_cast_search (itc, ce, delta, dtp_cmp, rc);
   GPF_T1
-      ("not to come here.  All comparisons needing cast or with different length intlike compressed strings go via the general case");
+      ("not to come here.  All comparisons needing CAST or with different length INT-like compressed strings go via the general case");
   set = itc->itc_set - itc->itc_col_first_set;
   if (ASC_NUMBERS != dtp_cmp && CE_FIND_LAST == rc)
     {
@@ -525,7 +525,7 @@ neq:
 extern int col_ins_error;
 
 int
-ce_bad_dtp (it_cursor_t * itc, db_buf_t ce, int set, int row_of_ce, int ce_n_values, int nth_key, int rc, int dtp_cmp)
+ce_bad_dtp (it_cursor_t * itc, db_buf_t ce, int set, row_no_t row_of_ce, int ce_n_values, int nth_key, int rc, int dtp_cmp)
 {
   if (ASC_NUMBERS == dtp_cmp)
     {
@@ -538,7 +538,6 @@ ce_bad_dtp (it_cursor_t * itc, db_buf_t ce, int set, int row_of_ce, int ce_n_val
       if (DVC_DTP_LESS == dtp_cmp && (!(nth_key && itc->itc_ranges[set].r_end <= row_of_ce)))
 	{
 	  /* if range extends to the ce and the ce is dtp lt the previous ce then the index is out of order */
-	  bing ();
 	  if (!allow_non_unq_range)
 	    {
 	      itc->itc_reset_after_seg = col_ins_error = 1;
@@ -1185,9 +1184,8 @@ ce_search_rld (it_cursor_t * itc, db_buf_t ce, row_no_t row_of_ce, int rc, int n
 	    {
 	      if (below > 0)
 		{
-		  bing ();
 		  if (!allow_non_unq_range)
-		    GPF_T1 ("In rld it is suspect to find lt value in range when looking for last match");
+		    GPF_T1 ("In rld, it is suspect to find lt value in range when looking for last match");
 		  itc->itc_reset_after_seg = col_ins_error = 1;
 		}
 	      goto next_set;
@@ -1914,7 +1912,7 @@ new_val:
 	  itc->itc_ranges[set].r_end = COL_NO_ROW;
 	  return CE_CONTINUES;
 	}
-      GPF_T1 ("not supposed to hity end with eq still looking for 1st");
+      GPF_T1 ("not supposed to hit end with eq still looking for 1st");
     }
   if (0 == nth_key && CE_FIND_FIRST == rc)
     itc_range (itc, COL_NO_ROW, COL_NO_ROW);

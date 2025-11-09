@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -2313,11 +2313,12 @@ insert_node_run (insert_node_t * ins, caddr_t * inst, caddr_t * state)
 	{
 	  if (qi->qi_client->cli_row_autocommit)
 	    qi->qi_non_txn_insert = 1;
-	    {
-	  key_vec_insert (ins, state, itc, ins->ins_keys[k]);
-	  itc_free_owned_params (itc);
-	  itc_col_free (itc);
-	}
+
+	  {
+	    key_vec_insert (ins, state, itc, ins->ins_keys[k]);
+	    itc_free_owned_params (itc);
+	    itc_col_free (itc);
+	  }
 	}
       qi->qi_non_txn_insert = non_txn_insert;
       qi->qi_set_mask = save_sets;
@@ -2742,8 +2743,7 @@ op_node_input (op_node_t * op, caddr_t * inst, caddr_t * state)
     case OP_CHECKPOINT:
 	{
 	  ddl_commit (qi);
-	  sf_makecp (arg_1 ? box_dv_short_string (arg_1) : sf_make_new_log_name (wi_inst.wi_master),
-	      qi->qi_trx, 0, 0);
+	  sf_makecp (sf_make_new_log_name (wi_inst.wi_master), qi->qi_trx, 0, 0);
 	}
       break;
 
@@ -3077,7 +3077,7 @@ skip_node_input (skip_node_t * sk, caddr_t * inst, caddr_t * qst)
   qi->qi_set = 0;
   skip = sk->sk_top_skip ? unbox (QST_GET (qst, sk->sk_top_skip)) : 0;
   top = sk->sk_top ? unbox (QST_GET (qst, sk->sk_top)) : -1;
-  /* TBD: skip_only = (top == -1 && skip >= 0 ? 1 : 0); */
+  skip_only = (top == -1 && skip >= 0 ? 1 : 0);
   if (skip < 0)
     sqlr_new_error ("22023", "SR349", "SKIP parameter < 0");
   if (top < 0 && !skip_only)
@@ -3592,7 +3592,7 @@ ddl_node_input_1 (ddl_node_t * ddl, caddr_t * inst, caddr_t * state)
 		      box_is_string (stmt, "unique", 5, stmt_len), 0, NULL);
     }
   else if (0 == strcmp (stmt[0], "add_col"))
-    ddl_add_col (qi, stmt[1], (caddr_t *) stmt[2]);
+    ddl_add_col (qi, stmt[1], (caddr_t *) stmt[2], 0);
   else if (0 == strcmp (stmt[0], "build_index"))
     ddl_build_index (qi, stmt[1], stmt[2], qi->qi_trx->lt_replicate);
   else if (0 == strcmp (stmt[0], "drop_index"))
@@ -3610,7 +3610,7 @@ qn_without_ac_at (data_source_t * qn, qn_input_fn inp, caddr_t * inst, caddr_t *
 {
   QNCAST (QI, qi, inst);
   client_connection_t * cli = qi->qi_client;
-  int save_at = cli->cli_anytime_timeout_orig;
+  uint32 save_at = cli->cli_anytime_timeout_orig;
   int save_ac = cli->cli_row_autocommit;
   cli->cli_row_autocommit = 0;
   cli->cli_anytime_timeout_orig = cli->cli_anytime_timeout = 0;
@@ -4092,7 +4092,7 @@ qi_set_options (query_instance_t * qi, stmt_options_t * opts)
 }
 
 
-long last_exec_time;		/* used to know when the system is idle */
+time_msec_t last_exec_time;		/* used to know when the system is idle */
 
 
 int
@@ -4381,11 +4381,20 @@ DBG_NAME(qr_exec) (DBG_PARAMS  client_connection_t * cli, query_t * qr,
 	if (ret && DV_ARRAY_OF_POINTER == DV_TYPE_OF (ret) && qr->qr_proc_vectored)
 	  {
 	    {
-	      caddr_t * prev = ret;
-	      ret = (caddr_t*)((caddr_t*)ret)[0];
-	      dk_free_box ((caddr_t)prev);
+	      caddr_t prev = ret;
+	      ret = (caddr_t)((caddr_t*)ret)[0];
+	      dk_free_box (prev);
 	    }
 	  }
+        if (ret && DV_ARRAY_OF_POINTER == DV_TYPE_OF (ret) && caller == CALLER_CLIENT)
+          {
+            DO_BOX (caddr_t, v, inx, ret)
+              {
+                if (DV_REFERENCE == DV_TYPE_OF(v)) /* non-copieable, will be released in qi_kill, furthermore no value for cli */
+                  ((caddr_t*)ret)[inx] = NULL;
+              }
+            END_DO_BOX;
+          }
       }
       qi->qi_proc_ret = NULL;
     }
@@ -4732,8 +4741,8 @@ qr_subq_exec (client_connection_t * cli, query_t * qr,
   user_t * saved_user = cli->cli_user;
   caddr_t saved_qual = NULL;
 #ifdef PLDBG
-  long start_time = ((qr->qr_proc_name && qr->qr_brk) ? get_msec_real_time () : 0);
-  long end_time;
+  time_msec_t start_time = ((qr->qr_proc_name && qr->qr_brk) ? get_msec_real_time () : 0);
+  time_msec_t end_time;
 #endif
 
   QR_EXEC_CHECK_STACK (caller, &ret, CALL_STACK_MARGIN, parms);
@@ -4940,8 +4949,8 @@ qr_subq_exec_vec (client_connection_t * cli, query_t * qr,
   char saved_qual_buf[25 + BOX_AUTO_OVERHEAD];
   caddr_t saved_qual = NULL;
 #ifdef PLDBG
-  long start_time = ((qr->qr_proc_name && qr->qr_brk) ? get_msec_real_time () : 0);
-  long end_time;
+  time_msec_t start_time = ((qr->qr_proc_name && qr->qr_brk) ? get_msec_real_time () : 0);
+  time_msec_t end_time;
 #endif
 
   QR_EXEC_CHECK_STACK (caller, &ret, CALL_STACK_MARGIN, NULL);

@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -131,7 +131,7 @@ create procedure "VAD"."DBA"."VAD_DAV_MKCOL" (
   declare ret integer;
   usr := 'dav';
   pwd := pwd_magic_calc('dav', (select U_PWD from WS.WS.SYS_DAV_USER where U_NAME='dav'), 1);
-  ret := "DB"."DBA"."DAV_COL_CREATE" (name, '110100100N', usr, NULL, usr, pwd);
+  ret := "DB"."DBA"."DAV_COL_CREATE" (name, '110100000N', usr, NULL, usr, pwd);
   return ret;
 }
 ;
@@ -745,6 +745,7 @@ create procedure "VAD"."DBA"."VAD_TEST_CREATE" (
     j := j + 1;
   }
   data := md5_final (ctx);
+  ctx := md5_init();
   "VAD"."DBA"."VAD_OUT_ROW" (fname, pos, 'MD5', data, ctx);
   return 1;
   error_fin:
@@ -1214,6 +1215,7 @@ create procedure "DB"."DBA"."VAD_INSTALL" (
       registry_set ('VAD_wet_run', '0');
       registry_set ('VAD_errcount', '1');
       connection_set ('vad_pkg_fullname', 'unknown');
+      connection_set ('vad_pkg_name', NULL);
       connection_set ('app_endpoint_uri', 'unknown');
       connection_set ('app_usage_uri', 'unknown');
       result ('42VAD', concat ('Could not open ',
@@ -1263,6 +1265,7 @@ create procedure "DB"."DBA"."VAD_INSTALL" (
       declare app_endpoint_uri, app_usage_uri varchar;
       app_endpoint_uri := connection_get ('app_endpoint_uri');
       app_usage_uri := connection_get ('app_usage_uri');
+      registry_set (sprintf ('VAD_%s', connection_get ('vad_pkg_name')), connection_get ('vad_pkg_version'));
 
       if (app_endpoint_uri is not null)
 	    result ('00000', sprintf ('Application is accessible via the endpoint at: %s', app_endpoint_uri));
@@ -1315,7 +1318,7 @@ failure:;
     -- from the checkpoint 
     declare trx, folder varchar;
     declare pos integer;
-    trx := coalesce (cfg_item_value(virtuoso_ini_path(), 'Database','TransactionFile'), '');
+    trx := coalesce (virtuoso_ini_item_value ('Database','TransactionFile'), '');
     folder := server_root ();
     trx := concat(rtrim(folder, '/'), '/', trx);
 
@@ -1472,6 +1475,8 @@ create procedure "VAD"."DBA"."VAD_READ" (
       "VAD"."DBA"."VAD_CHECK_STICKER_DETAILS" (parr, doc, pkg_name, pkg_vers, pkg_fullname, pkg_date, 0);
 
       connection_set ('vad_pkg_fullname', pkg_fullname);
+      connection_set ('vad_pkg_name', pkg_name);
+      connection_set ('vad_pkg_version', pkg_vers);
 
       items := xpath_eval ('/sticker/caption/name/prop[@name=\'AppEndpointURI\']', doc, 0);
       n := length (items);
@@ -1891,6 +1896,7 @@ create procedure "DB"."DBA"."VAD_UNINSTALL_BY_NAME"(
     "VAD"."DBA"."VAD_FAIL_CHECK"(sprintf('The installation of "%s" does not exist or was corrupted. VAD cannot find its current version.', name));
   DB.DBA.VAD_DEPS_CHECK (parr, name, lval);
   "VAD"."DBA"."VAD_PKG_UNINSTALL"(parr, tid, lval);
+  registry_remove (sprintf ('VAD_%s', name));
   return 'OK';
 }
 ;
@@ -1902,6 +1908,12 @@ create procedure "DB"."DBA"."VAD_CHECK_VERSION"(
   declare parr any;
   declare curdir, ret, tid integer;
   declare res, lname, ltype, lval varchar;
+
+  declare ver any;
+  ver := registry_get (sprintf ('VAD_%s', name));
+  if (isstring(ver))
+    return ver;
+
   parr := null;
   curdir := "VAD"."DBA"."VAD_CHDIR"(parr, 0, '/VAD');
   tid := "VAD"."DBA"."VAD_CHDIR"(parr, curdir, name);
@@ -1912,6 +1924,7 @@ create procedure "DB"."DBA"."VAD_CHECK_VERSION"(
   if (not ret)
     return null;
 --    "VAD"."DBA"."VAD_FAIL_CHECK"(sprintf('The installation of "%s" does not exist or was corrupted. VAD cannot find its current version.', name));
+  registry_set (sprintf ('VAD_%s', name), lval);
   return lval;
 }
 ;
@@ -2053,6 +2066,7 @@ create procedure "DB"."DBA"."VAD_UNINSTALL"(
     "VAD"."DBA"."VAD_FAIL_CHECK"(sprintf('Attempt to remove non-current version of package "%s"', prod));
   DB.DBA.VAD_DEPS_CHECK (parr, prod, lval);
   "VAD"."DBA"."VAD_PKG_UNINSTALL"(parr, tid, version);
+  registry_remove (sprintf ('VAD_%s', prod));
   return 'OK';
 }
 ;
@@ -2386,7 +2400,7 @@ create procedure "VAD"."DBA"."VAD_AUTO_UPGRADE" ()
   declare pname, pver, pfull, pisdav, pdate any;
   declare vaddir any;
 
-  vaddir := cfg_item_value (virtuoso_ini_path (), 'Parameters', 'VADInstallDir'); --'../vad/';
+  vaddir := virtuoso_ini_item_value ('Parameters', 'VADInstallDir'); --'../vad/';
 
   if (vaddir is null)
     return;

@@ -5,7 +5,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -30,7 +30,7 @@ export LANG LC_ALL
 
 
 LOGDIR=`pwd`
-VERSION="1.00.02"
+VERSION="1.00.03"
 LOGFILE="${LOGDIR}/make_http_debug_vad.log"
 STICKER="make_http_debug_vad.xml"
 SERVER=${SERVER-virtuoso}
@@ -195,7 +195,7 @@ sticker_init() {
   echo "  <name package=\"http_debug\">" >> $STICKER
   echo "    <prop name=\"Title\" value=\"HTTP Level debug tool\"/>" >> $STICKER
   echo "    <prop name=\"Developer\" value=\"OpenLink Software\"/>" >> $STICKER
-  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2021 OpenLink Software\"/>" >> $STICKER
+  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2025 OpenLink Software\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.com/virtuoso\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.co.uk/virtuoso\"/>" >> $STICKER
   echo "  </name>" >> $STICKER
@@ -231,13 +231,12 @@ sticker_init() {
 
   for file in `find vad/data/http_debug -type f -print | sort`
   do
-     if echo "$file" | grep -v ".vspx" >/dev/null
-     then
-	perms="110100100NN"
-     else
-	perms="111101101NN"
-     fi
      name=`echo "$file" | cut -b10-`
+     case "$name" in
+        *.sql)  		perms='110100000NN' ;;
+	*.vsp|*.vspx|*.php)	perms='111101101NN' ;;
+        *)			perms='110100100NN' ;;
+     esac
      echo "  <file overwrite=\"yes\" type=\"dav\" source=\"data\" target_uri=\"$name\" dav_owner=\"dav\" dav_grp=\"administrators\" dav_perm=\"$perms\" makepath=\"yes\"/>" >> $STICKER
   done
 

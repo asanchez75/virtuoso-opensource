@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -105,7 +105,7 @@ sparp_dump_weird_query (spar_query_env_t *sparqre, const char *reason, char *md5
       MD5_CTX ctx;
       unsigned char digest[16];
       int inx;
-      long msec = get_msec_real_time ();
+      time_msec_t msec = get_msec_real_time ();
       memset (&ctx, 0, sizeof (MD5_CTX));
       MD5_Init (&ctx);
       MD5_Update (&ctx, (unsigned char *) txt, strlen(txt));
@@ -143,8 +143,6 @@ sparp_mp_sparql_cap_cbk (mem_pool_t *mp, void *cbk_env)
 }
 
 /*#define SPAR_ERROR_DEBUG*/
-
-extern void jsonyyerror_impl(const char *s);
 
 size_t
 spart_count_specific_elems_by_type (ptrlong type)
@@ -600,9 +598,6 @@ sparp_expand_qname_prefix (sparp_t * sparp, caddr_t qname)
   lname++;
   do
     {
-      ns_uri = (caddr_t)dk_set_get_keyword (ns_dict, ns_pref, NULL);
-      if (NULL != ns_uri)
-	break;
       if (!strcmp (ns_pref, "rdf"))
 	{
 	  ns_uri = uname_rdf_ns_uri;
@@ -620,14 +615,17 @@ sparp_expand_qname_prefix (sparp_t * sparp, caddr_t qname)
 	}
       if (!strcmp ("sql", ns_pref))
 	{
-	  ns_uri = box_dv_uname_string ("sql:");
+	  ns_uri = uname_sql_ns_uri;
 	  break;
 	}
       if (!strcmp ("bif", ns_pref))
 	{
-	  ns_uri = box_dv_uname_string ("bif:");
+	  ns_uri = uname_bif_ns_uri;
 	  break;
 	}
+      ns_uri = (caddr_t)dk_set_get_keyword (ns_dict, ns_pref, NULL);
+      if (NULL != ns_uri)
+	break;
       ns_uri = xml_get_ns_uri (sparp->sparp_sparqre->sparqre_cli, ns_pref, 0x3, 1 /* ret_in_mp_box */ );
       if (NULL != ns_uri)
 	break;
@@ -677,7 +675,7 @@ sparp_exec_Narg (sparp_t *sparp, const char *pl_call_text, query_t **cached_qr_p
   local_cursor_t *lc = NULL;
   caddr_t err = NULL;
   user_t *saved_user = cli->cli_user;
-  int saved_anytime_started = cli->cli_anytime_started;
+  time_msec_t saved_anytime_started = cli->cli_anytime_started;
   if (cli->cli_clt) /* Branch of cluster transaction, can't initiate partitioned operations */
     return NULL;
   if (!lt->lt_threads)
@@ -824,8 +822,9 @@ sparp_id_to_iri (sparp_t *sparp, iri_id_t iid)
   return NULL; /* to keep compiler happy */
 }
 
-caddr_t spar_unescape_strliteral (sparp_t *sparp, const char *strg, int count_of_quotes, int mode)
+caddr_t spar_unescape_strliteral (void *_sparp, const char *strg, int count_of_quotes, int mode)
 {
+  sparp_t *sparp = (sparp_t *)_sparp;
   caddr_t tmp_buf;
   caddr_t res;
   const char *err_msg;
@@ -939,7 +938,7 @@ next_u:
 err:
   dk_free_box (tmp_buf);
   if (SPAR_STRLITERAL_JSON_STRING == mode)
-    jsonyyerror_impl (err_msg);
+    sqlr_new_error ("37000", "JSON1", "JSON parser failed: %.200s", err_msg);
   else
     sparyyerror_impl (sparp, NULL, err_msg);
   return NULL;
@@ -4140,21 +4139,20 @@ spar_make_variable (sparp_t *sparp, caddr_t name)
 #endif
   if (is_global)
     {
+      if (sparp->sparp_in_precode_expn & SPARP_PRECODE_NO_GLOBAL_VARS)
+        spar_error (sparp, "Global variable '%.100s' is not allowed in a constant clause", name);
       t_set_push_new_string (&(sparp->sparp_env->spare_global_var_names), name);
     }
-  if (sparp->sparp_in_precode_expn)
+  else
     {
-      if (2 & sparp->sparp_in_precode_expn)
-        spar_error (sparp, "Variable '%.100s' is not allowed in a constant clause", name);
-      else if (!is_global)
+      if (sparp->sparp_in_precode_expn & SPARP_PRECODE_NO_LOCAL_VARS)
         spar_error (sparp, "non-global variable '%.100s' can not be used outside any group pattern or result-set list", name);
     }
   if (is_global) /* say, 'insert in graph ?:someglobalvariable {...} where {...} */
     selid = t_box_dv_uname_string ("(global)");
   else if (SPART_VARNAME_IS_SPECIAL(name)) /* say, '@"limofs"."describe-1"' */
     selid = t_box_dv_uname_string ("(special)");
-  /*!!! TBD finda replacement for
-  else
+  /*!!! TBD find a replacement for
     spar_internal_error (sparp, "non-global variable outside any group pattern or result-set list"); */
   else
     selid = NULL;
@@ -4176,7 +4174,7 @@ spar_make_macropu (sparp_t *sparp, caddr_t name, ptrlong pos)
 SPART *spar_make_blank_node (sparp_t *sparp, caddr_t name, int bracketed)
 {
   SPART *res;
-  if ((sparp->sparp_in_precode_expn) && !(bracketed & 0x2))
+  if ((sparp->sparp_in_precode_expn & SPARP_PRECODE_NO_BNODES) && !(bracketed & 0x2))
     spar_error (sparp, "Blank node '%.100s' is not allowed in a constant clause", name);
   /*if (NULL == env->spare_selids)
     spar_error (sparp, "Blank nodes (e.g., '%.100s') can not be used outside any group pattern or result-set list", name);*/
@@ -4733,6 +4731,11 @@ static const char *spar_unsafe_bif_names[] = {
   "REGISTRY_SET",
   "REGISTRY_SET_ALL",
   "STRING_TO_FILE",
+  "SEQUENCE_REMOVE",
+  "SEQUENCE_GET_ALL",
+  "SEQUENCE_NEXT_BOUNDED",
+  "SEQUENCE_NEXT",
+  "SEQUENCE_SET",
   "SYSTEM"
 };
 
@@ -4758,6 +4761,10 @@ sparp_sql_function_name_is_unsafe (const char *buf)
 int
 sparp_bif_function_name_is_unsafe (const char *buf)
 {
+  if (buf && !strcasecmp (buf, "__rdf_long_from_batch_params"))
+    return 0;
+  if (buf && !strncmp (buf, "__", 2)) /* no internal bifs allowed as SPARQL bif:xx() */
+    return 1;
   return (ECM_MEM_NOT_FOUND != ecm_find_name (buf, spar_unsafe_bif_names, spar_unsafe_bif_names__count, sizeof (caddr_t)));
 }
 
@@ -4807,15 +4814,15 @@ spar_verify_funcall_security (sparp_t *sparp, int *is_agg_ret, const char **fnam
     }
   if (is_sql)
     {
-      if ((U_ID_DBA != uid) && sparp_sql_function_name_is_unsafe (buf))
+      if (!sec_user_has_group (G_ID_DBA, uid)  && sparp_sql_function_name_is_unsafe (buf))
         goto restricted; /* see below */
       need_check_for_sparql11_agg = 1;
     }
   else if (is_bif)
     {
-      if ((U_ID_DBA != uid) && sparp_sql_function_name_is_unsafe (buf))
+      if (!sec_user_has_group (G_ID_DBA, uid) && sparp_sql_function_name_is_unsafe (buf))
         goto restricted; /* see below */
-      if ((U_ID_DBA != uid) && sparp_bif_function_name_is_unsafe (buf))
+      if (!sec_user_has_group (G_ID_DBA, uid) && sparp_bif_function_name_is_unsafe (buf))
         goto restricted; /* see below */
       if (NULL != name_to_pl_name)
         {
@@ -4828,7 +4835,7 @@ spar_verify_funcall_security (sparp_t *sparp, int *is_agg_ret, const char **fnam
               strncpy (buf, full_sql_name_ptr[0]+7, sizeof(buf)-1);
               buf[sizeof(buf)-1] = '\0';
               strupr (buf);
-              if ((U_ID_DBA != uid) && sparp_sql_function_name_is_unsafe (buf))
+              if (!sec_user_has_group (G_ID_DBA, uid) && sparp_sql_function_name_is_unsafe (buf))
                 goto restricted; /* see below */
               strcpy (buf, "sql:");
               strncpy (buf+4, full_sql_name_ptr[0]+7, sizeof(buf)-5);
@@ -5102,7 +5109,7 @@ const sparp_bif_desc_t sparp_bif_descs[] = {
   { "tz"		, SPAR_BIF_TZ			, 'S'	, SSG_SD_SPARQL11_DRAFT	, 1	, 1	, SSG_VALMODE_SQLVAL	, { SSG_VALMODE_NUM, NULL, NULL}			, SPART_VARR_IS_LIT | SPART_VARR_NOT_NULL | SPART_VARR_LONG_EQ_SQL	},
   { "ucase"		, SPAR_BIF_UCASE		, 'B'	, SSG_SD_SPARQL11_DRAFT	, 1	, 1	, SSG_VALMODE_LONG	, { SSG_VALMODE_LONG, NULL, NULL}			, SPART_VARR_IS_LIT	},
   { "uri"		, SPAR_BIF_URI			, '-'	, SSG_SD_BI_OR_SPARQL11_DRAFT	, 1	, 1	, SSG_VALMODE_LONG	, { SSG_VALMODE_SQLVAL, NULL, NULL}			, SPART_VARR_IS_IRI | SPART_VARR_IS_REF	},
-  { "uuid"		, SPAR_BIF_UUID			, 'S'	, SSG_SD_SPARQL11_DRAFT	, 0	, 0	, SSG_VALMODE_LONG	, { SSG_VALMODE_LONG, NULL, NULL}			, SPART_VARR_IS_IRI | SPART_VARR_NOT_NULL	},
+  { "uuid"             , SPAR_BIF_UUID                 , 'B'   , SSG_SD_SPARQL11_DRAFT , 0     , 0     , SSG_VALMODE_LONG      , { SSG_VALMODE_LONG, NULL, NULL}                       , SPART_VARR_IS_IRI | SPART_VARR_NOT_NULL       },
   { "valid"		, SPAR_BIF_VALID		, 'B'	, SSG_SD_VOS_6		, 1	, 1	, SSG_VALMODE_BOOL	, { SSG_VALMODE_LONG, NULL, NULL}			, SPART_VARR_IS_LIT | SPART_VARR_NOT_NULL | SPART_VARR_LONG_EQ_SQL | SPART_VARR_IS_BOOL	},
   { "year"		, SPAR_BIF_YEAR			, 'B'	, SSG_SD_SPARQL11_DRAFT	, 1	, 1	, SSG_VALMODE_NUM	, { SSG_VALMODE_NUM, NULL, NULL}			, SPART_VARR_IS_LIT | SPART_VARR_NOT_NULL | SPART_VARR_LONG_EQ_SQL	}
 };
@@ -5371,6 +5378,23 @@ spar_make_topmost_sparul_sql (sparp_t *sparp, SPART **actions)
   SPART **action_sqls;
   caddr_t volatile err = NULL;
   int action_ctr, action_count = BOX_ELEMENTS (actions);
+/* INSERT DATA can be converted to a pair of INSERT DATA (w/o blank nodes) and INSERT (with blank nodes), then it's stored in list of actions as a SPAR_LIST with 2 items */
+  for (action_ctr = action_count; action_ctr--; /* no step */)
+    {
+      SPART *actn = actions [action_ctr];
+      if (SPAR_LIST == SPART_TYPE (actn))
+        {
+          int lst_len = BOX_ELEMENTS (actn->_.list.items);
+          if (0 == lst_len)
+            actions = (SPART **)t_list_remove_nth ((caddr_t)actions, action_ctr);
+          else
+            {
+              actions = (SPART **)t_list_insert_many_before_nth ((caddr_t)actions, (caddr_t *)(actn->_.list.items + 1), lst_len - 1, action_ctr + 1);
+              actions[action_ctr] = actn->_.list.items[0];
+            }
+          action_count = BOX_ELEMENTS (actions);
+        }
+    }
   if ((1 == action_count) && unbox (spar_compose_report_flag (sparp)))
     return actions[0]; /* No need to make grouping around single action. */
 /* First of all, every tree for every action is compiled into string literal containing SQL text. */
@@ -6173,6 +6197,8 @@ bif_sparql_to_sql_text (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   str = bif_string_arg (qst, args, 0, "sparql_to_sql_text");
   if (1 < BOX_ELEMENTS (args))
     uname = bif_string_arg (qst, args, 1, "sparql_to_sql_text"); /* set before MP_START () for case of argument of wrong type causing signal w/o MP_DONE() */
+  if (THR_TMP_POOL != NULL)
+    sqlr_new_error ("42000", "MPNOT", "The memory pool is busy");
   MP_START ();
   memset (&sparqre, 0, sizeof (spar_query_env_t));
   sparqre.sparqre_param_ctr = &param_ctr;

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1065,7 +1065,7 @@ du_thread_t * parse_mtx_owner;
 int enable_parse_mtx = 0;
 
 void
-parse_enter ()
+parse_enter (void)
 {
   if (enable_parse_mtx)
     mutex_enter (parse_mtx);
@@ -1073,7 +1073,7 @@ parse_enter ()
 
 
 void
-parse_leave ()
+parse_leave (void)
 {
   if (enable_parse_mtx)
     mutex_leave (parse_mtx);
@@ -1277,7 +1277,11 @@ sqlc_hook (client_connection_t * cli, caddr_t * real_tree_ret, caddr_t * err_ret
     }
   parse_leave ();
   if (proc->qr_to_recompile)
-    proc = qr_recompile (proc, NULL);
+    {
+      sqlc_hook_enable = 0;
+      proc = qr_recompile (proc, NULL);
+      sqlc_hook_enable = 1;
+    }
   p1 = (state_slot_t *) (proc->qr_parms ? proc->qr_parms->data : NULL);
   if (!p1 || !IS_SSL_REF_PARAMETER (p1->ssl_type))
     {
@@ -1475,7 +1479,7 @@ query_t *
 DBG_NAME(sql_compile_1) (DBG_PARAMS const char *string2, client_connection_t * cli,
 	     caddr_t * err, volatile int cr_type, ST *the_parse_tree, char *view_name)
 {
-  volatile long msecs = prof_on ? get_msec_real_time () : 0;
+  volatile time_msec_t msecs = prof_on ? get_msec_real_time () : 0;
   db_activity_t da_before;
   caddr_t cc_error;
   char *string = NULL;

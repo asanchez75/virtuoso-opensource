@@ -3,7 +3,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -381,7 +381,7 @@ WEBDAV.updateLabel = function(value)
       OAT.Dom.hide('tab_'+i);
   }
 
-  if (['', 'rdfSink', 'S3', 'GDrive', 'Dropbox', 'SkyDrive', 'Box', 'WebDAV', 'RACKSPACE', 'FTP', 'LDP'].indexOf(value) === -1) {
+  if (['', 'rdfSink', 'S3', 'GDrive', 'Dropbox', 'SkyDrive', 'Box', 'WebDAV', 'RACKSPACE', 'FTP', 'LDP', 'AZURE'].indexOf(value) === -1) {
     OAT.Dom.hide('tr_dav_ldp');
   } else {
     OAT.Dom.show('tr_dav_ldp');
@@ -411,7 +411,7 @@ WEBDAV.updateLabel = function(value)
   if (!value)
     return;
 
-  hideLabel(4, 20);
+  hideLabel(4, 21);
   if (value == 'oMail')
     showLabel(4, 4);
   else if (value == 'PropFilter')
@@ -444,6 +444,8 @@ WEBDAV.updateLabel = function(value)
     showLabel(19, 19);
   else if (value == 'LDP')
     showLabel(20, 20);
+  else if (value == 'AZURE')
+    showLabel(21, 21);
 }
 
 
@@ -861,6 +863,7 @@ WEBDAV.updateRdfGraph = function ()
   updateRdfGraphInternal('RACKSPACE');
   updateRdfGraphInternal('FTP');
   updateRdfGraphInternal('LDP');
+  updateRdfGraphInternal('AZURE');
 
   $('dav_name_save').value = escape($v('dav_name'));
 }
@@ -1000,6 +1003,15 @@ WEBDAV.loadIMAPFolders = function ()
 WEBDAV.dav_DET_seqNo = 0;
 WEBDAV.loadDriveFolders = function (drive, fields)
 {
+  var rtrim = function (str, s) {
+    if (!str)
+      return str;
+
+    if (s == undefined)
+        s = '\\s';
+    return str.replace(new RegExp("[" + s + "]*$"), '');
+  }
+
   var x = function(seqNo, drive, data) {
     if (seqNo < WEBDAV.dav_DET_seqNo)
       return;
@@ -1013,7 +1025,7 @@ WEBDAV.loadDriveFolders = function (drive, fields)
         var founded = false;
         for (var i = 0; i < o.length; i++) {
           cl.addOption(o[i]);
-          if (o[i] == dav_DET_path.value)
+          if (rtrim(o[i], '/') == rtrim (dav_DET_path.value, '/'))
             founded = true;
         }
         if (!founded)
@@ -1025,19 +1037,19 @@ WEBDAV.loadDriveFolders = function (drive, fields)
     }
     OAT.Dom.hide(cl.throbler);
   }
-  var params = '&drive='+drive;
+  var params = '&drive='+encodeURIComponent(drive);
   if (fields) {
     for (var i = 0; i < fields.length; i++) {
-      params  += '&'+fields[i]+'=' + $v('dav_'+drive+'_' + fields[i]).trim();
+      params  += '&'+fields[i]+'=' + encodeURIComponent($v('dav_'+drive+'_' + fields[i]).trim());
     }
   }
   if ($('item_path'))
-    params  += '&path=' + $v('item_path');
+    params  += '&path=' + encodeURIComponent($v('item_path'));
 
   var txt = $v('dav_'+drive+'_JSON');
   if (txt) {
     var json = OAT.JSON.deserialize(txt);
-    params += '&sid='+json.sid;
+    params += '&sid='+encodeURIComponent(json.sid);
   }
 
   var dav_DET_path = $('dav_'+drive+'_path');
@@ -1105,17 +1117,17 @@ WEBDAV.loadDriveBuckets = function (drive, bucketName, fields)
       }
       OAT.Dom.hide(cl.throbler);
     }
-    var params = '&drive='+drive;
+    var params = '&drive='+encodeURIComponent(drive);
     for (var i = 0; i < fields.length; i++) {
-      params  += '&'+fields[i]+'=' + $v('dav_'+drive+'_' + fields[i]).trim();
+      params  += '&'+fields[i]+'=' + encodeURIComponent($v('dav_'+drive+'_' + fields[i]).trim());
     }
     if ($('item_path'))
-      params  += '&path=' + $v('item_path');
+      params  += '&path=' + encodeURIComponent($v('item_path'));
 
     var txt = $v('dav_'+drive+'_JSON');
     if (txt) {
       var json = OAT.JSON.deserialize(txt);
-      params += '&sid='+json.sid;
+      params += '&sid='+encodeURIComponent(json.sid);
     }
 
     var dav_DET_BucketName = $('dav_'+drive+'_'+bucketName);
@@ -1393,14 +1405,8 @@ WEBDAV.menuMouseOut = function (event)
     return false;
   }
 
-  if (window.event)
-  {
-    current = this;
-    related = window.event.toElement;
-  } else {
-    current = event.currentTarget;
-    related = event.relatedTarget;
-  }
+  current = event.currentTarget;
+  related = event.relatedTarget;
   if ((current != related) && !menuMouseIn(current, related))
     OAT.Dom.hide(current);
 }
@@ -1811,10 +1817,22 @@ WEBDAV.nameByMimeTypeSelect = function (obj)
 
 WEBDAV.turtleRedirectAppChange = function (obj)
 {
-  if (obj.value == 'sponger')
-    $('dav_turtleRedirectParams').value = '&sponger:get=soft';
-  else if (obj.value == 'fct')
-    $('dav_turtleRedirectParams').value = '&sponger:get=soft';
-  else if (obj.value == 'osde')
-    $('dav_turtleRedirectParams').value = '&view=statements';
+  const datalist = document.getElementById('sponger_modes');
+  datalist.innerHTML = '';
+  if (obj.value === 'sponger' || obj.value === 'fct') {
+    const values = [
+      '&sponger:get=soft',
+      '&sponger:get=add',
+      '&sponger:get=replace'
+    ];
+    values.forEach(val => {
+      const option = document.createElement('option');
+      option.value = val;
+      datalist.appendChild(option);
+    });
+  } else if (obj.value === 'osde') {
+    const option = document.createElement('option');
+    option.value = '&view=statements';
+    datalist.appendChild(option);
+  }
 };

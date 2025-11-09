@@ -5,7 +5,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -322,7 +322,7 @@ sticker_init() {
   echo "  <name package=\"$VAD_NAME\">" >> $STICKER
   echo "    <prop name=\"Title\" value=\"$VAD_DESC\"/>" >> $STICKER
   echo "    <prop name=\"Developer\" value=\"OpenLink Software\"/>" >> $STICKER
-  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2021 OpenLink Software\"/>" >> $STICKER
+  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2025 OpenLink Software\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.com/virtuoso\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.co.uk/virtuoso\"/>" >> $STICKER
   echo "  </name>" >> $STICKER
@@ -523,12 +523,12 @@ directory_clean
 directory_init
 version_init
 sticker_init 1
-sticker_init 0
+#sticker_init 0
 virtuoso_init
-vad_create $STICKER_FS $VAD_NAME_DEVEL
+#vad_create $STICKER_FS $VAD_NAME_DEVEL
 vad_create $STICKER_DAV $VAD_NAME_RELEASE
 virtuoso_shutdown
-chmod 644 $VAD_NAME_DEVEL
+#chmod 644 $VAD_NAME_DEVEL
 chmod 644 $VAD_NAME_RELEASE
 
 CHECK_LOG

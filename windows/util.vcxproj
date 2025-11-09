@@ -60,13 +60,13 @@
       <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
       <Optimization>Full</Optimization>
       <OmitFramePointers>false</OmitFramePointers>
-      <AdditionalIncludeDirectories>..\libsrc\Xml.new;..\libsrc;..\libsrc\Dk;..\libsrc\util\win32;..\libsrc\langfunc;..\libsrc\plugin;..\SDK\$(ShortPlatform)\sslsdk\inc32;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\libsrc\Xml.new;..\libsrc;..\libsrc\Dk;..\libsrc\util\win32;..\libsrc\langfunc;..\libsrc\plugin;..\SDK\$(ShortPlatform)\sslsdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>DLDAPI_WINDOWS;_SSL;YYTOKENTYPE;INPROCESS_CLIENT;_MBCS;WIN32;WINDOWS;_Windows;NDEBUG;IN_LIBUTIL;_LIBC;_GNU_SOURCE;SUPPORT_UTF8;GLOBALREF=extern;__WITH_LIBDK;PCRE_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>false</MinimalRebuild>
       <ExceptionHandling>
       </ExceptionHandling>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <FunctionLevelLinking>false</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -92,7 +92,7 @@
       <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
       <Optimization>Full</Optimization>
       <OmitFramePointers>false</OmitFramePointers>
-      <AdditionalIncludeDirectories>..\libsrc\Xml.new;..\libsrc;..\libsrc\Dk;..\libsrc\util\win32;..\libsrc\langfunc;..\libsrc\plugin;..\SDK\$(ShortPlatform)\sslsdk\inc32;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\libsrc\Xml.new;..\libsrc;..\libsrc\Dk;..\libsrc\util\win32;..\libsrc\langfunc;..\libsrc\plugin;..\SDK\$(ShortPlatform)\sslsdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>DLDAPI_WINDOWS;_SSL;YYTOKENTYPE;INPROCESS_CLIENT;_MBCS;WIN32;WINDOWS;_Windows;NDEBUG;IN_LIBUTIL;_LIBC;_GNU_SOURCE;SUPPORT_UTF8;GLOBALREF=extern;__WITH_LIBDK;PCRE_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>false</MinimalRebuild>
       <ExceptionHandling>
@@ -141,6 +141,7 @@
     <ClCompile Include="..\libsrc\util\logmsg.c" />
     <ClCompile Include="..\libsrc\util\ltrim.c" />
     <ClCompile Include="..\libsrc\util\make_env.c" />
+    <ClCompile Include="..\libsrc\util\memstat.c" />
     <ClCompile Include="..\libsrc\util\mpl.c" />
     <ClCompile Include="..\libsrc\util\ncfg.c" />
     <ClCompile Include="..\libsrc\util\ntapp.c" />

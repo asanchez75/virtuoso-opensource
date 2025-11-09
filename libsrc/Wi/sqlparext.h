@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -537,6 +537,7 @@ typedef struct sql_tree_s
 	    char *	name;
 	    ST **	cols;
 	    ptrlong	flags;
+	    ptrlong	if_not_exists;
 	  } table_def;
 	struct {
 	  caddr_t	name;
@@ -573,6 +574,7 @@ typedef struct sql_tree_s
 	    char *	table;
 	    caddr_t *	cols;
 	    caddr_t *	opts;
+	    ptrlong	if_not_exists;
 	  } index;
 	struct
 	  {
@@ -645,6 +647,7 @@ typedef struct sql_tree_s
 	    ST **	params;
 	    ST *	ret_param;
 	    caddr_t	type_name; /* for static methods */
+            caddr_t     serial; /* for unique generators e.g. rand() and uuid() */
 	  } call;
 	struct
 	  {
@@ -848,7 +851,9 @@ extern long sqlp_bin_op_serial;
       BIN_OP (target, BOP_DIV, t1, t2); \
     } \
   else \
-    FN_REF_1 (target, n, all_dist, argp);
+    { \
+      FN_REF_1 (target, n, all_dist, argp); \
+    }
 
 #define FN_REF(target, n, all_dist, argp) \
   if (ST_COLUMN (((ST *) (argp)), COL_DOTTED) && ((ST *) (argp))->_.col_ref.prefix == NULL && ((ST *) (argp))->_.col_ref.name == STAR) \
@@ -871,7 +876,7 @@ extern long sqlp_bin_op_serial;
 
 
 #define ST_P(s, tp) \
-  (ARRAYP (s) && BOX_ELEMENTS (s) > 0 && (s)->type == tp)
+  (ARRAYP (s) && BOX_ELEMENTS (s) > 0 && (s)->type == tp && sqlp_tree_check_sz (tp, s))
 
 #define ST_COLUMN(s, tp) \
   (ARRAYP (s) && BOX_ELEMENTS (s) == 3 && (s)->type == COL_DOTTED && \
@@ -913,5 +918,6 @@ extern long sqlp_bin_op_serial;
 #define T_COLUMN 1
 #define T_DISTINCT_COLUMNS 2
 
+int sqlp_tree_check_sz (ptrlong type, sql_tree_t * tree);
 
 #endif

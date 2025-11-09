@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -36,10 +36,8 @@ create index URIQA_HANDLER_ORDER_NAME on WS.WS.URIQA_HANDLER (UH_ORDER, UH_NAME)
 
 create function WS.WS.URIQA_CFG_ITEM_VALUE (in param_name varchar, in is_list integer, in dflt_value varchar)
 {
-  declare ini_path varchar;
   declare string_val varchar;
   declare list_val any;
-  ini_path := virtuoso_ini_path ();
   string_val := virtuoso_ini_item_value ('URIQA', param_name);
   if (string_val is not null)
     {

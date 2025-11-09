@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -3492,7 +3492,7 @@ DBG_NAME(xp_attribute) (DBG_PARAMS xml_entity_t * xe, int start, XT * node, cadd
           local = tptr;
           local_len = len;
         }
-      if (!have_ns && !ST_P (node, XP_NAME_EXACT) && (local_len >= 5) && !memcmp (local, "xmlns", 5))
+      if (!have_ns && !XT_P (node, XP_NAME_EXACT) && (local_len >= 5) && !memcmp (local, "xmlns", 5))
 	nt_res = 0;
       else
         nt_res = xt_node_test_match_parts (node, (char *) local, local_len, ns);

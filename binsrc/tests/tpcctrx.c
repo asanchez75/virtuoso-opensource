@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -44,11 +44,6 @@
 
 #include "tpcc.h"
 
-void new_order ();
-void payment ();
-void ostat ();
-void slevel ();
-void delivery_1 (SDWORD, int);
 void scrap_log ();
 
 extern char dbms[40];
@@ -118,27 +113,35 @@ char *new_order_text_SOAP = "soap_call (concat ('localhost:' , server_http_port(
     "'i_id_9', ?, 's_w_id_9', ?, 'qty_9', ?,"
     "'i_id_10', ?, 's_w_id_10', ?, 'qty_10', ?))";
 
+
 int
-make_supply_w_id ()
-{
-  if (n_ware > 1 && RandomNumber (0, 99) < 10)
+other_w_id (void)
     {
       int n, n_tries = 0;
       do
 	{
 	  n = RandomNumber (1, n_ware);
+      if (n != local_w_id)
+	return n;
 	  n_tries++;
 	}
       while (n == local_w_id && n_tries < 10);
       return local_w_id;
     }
+
+
+int
+make_supply_w_id (void)
+{
+  if (n_ware > 1 && RandomNumber (0, 99) == 10)
+    return other_w_id ();
   else
     return local_w_id;
 }
 
 
 int
-rnd_district ()
+rnd_district (void)
 {
   return (10 - (RandomNumber (0, 9999) / 1000));
 }
@@ -176,16 +179,20 @@ char *ostat_text;
 
 /* #define NO_ONLY */
 
+extern int speed_limit;
+
 void
-do_10_pack ()
+do_10_pack (void)
 {
+  int target_duration = 0;
   int n;
   long start = get_msec_count (), duration;
-
+  if (speed_limit)
+    target_duration = 600000 / speed_limit;
   ta_enter (&ten_pack_ta);
   for (n = 0; n < 10; n++)
     {
-      new_order ();
+      while (0 == new_order ());
 #ifndef NO_ONLY
       payment ();
 #endif
@@ -195,8 +202,12 @@ do_10_pack ()
   ta_enter (&delivery_ta);
   if (strstr (dbms, "Virtuoso") || strstr (dbms, "SOAP"))
     {
+#if 1
+      delivery_1 (local_w_id, -1);
+#else
       for (n = 1; n <= 10; n++)
 	delivery_1 (local_w_id, n);
+#endif
     }
   else
     {
@@ -209,6 +220,9 @@ do_10_pack ()
 
   ta_leave (&ten_pack_ta);
   duration = get_msec_count () - start;
+  if (duration < target_duration)
+    sleep_msec (target_duration - duration);
+  check_reconnect ();
 #if defined(GUI)
   log (1, "-- %ld tpmC\n", 600000 / duration);
 #else
@@ -220,7 +234,7 @@ do_10_pack ()
 #define SAMPLE_CHECK 5000
 #define CHECK_POINT_INTERVAL 15000
 void
-reset_times ()
+reset_times (void)
 {
   ta_init (&new_order_ta, "NEW ORDER");
   ta_init (&payment_ta, "PAYMENT");
@@ -232,7 +246,7 @@ reset_times ()
 
 
 void
-print_times ()
+print_times (void)
 {
 #if !defined(GUI)
   ta_print_out (stdout, &new_order_ta);
@@ -361,8 +375,9 @@ void
 run_test (int argc, char **argv)
 {
 
-  if (!do_run_test (atoi (argv[5]), argc == 8 ? atoi (argv[6]) : -1,
-	  argc == 8 ? atoi (argv[7]) : -1))
+  if (argc > 8)
+    speed_limit = atoi (argv[8]);
+  if (!do_run_test (atoi (argv[5]), argc >= 8 ? atoi (argv[6]) : -1, argc >= 8 ? atoi (argv[7]) : -1))
     {
 #if !defined(GUI)
       printf ("Unknown DBMS %s\n", dbms);
@@ -376,7 +391,7 @@ run_test (int argc, char **argv)
 
 
 void
-transaction_per_period (int nPeriodSeconds, void (*tr1) ())
+transaction_per_period (int nPeriodSeconds, transaction_per_period_cbk_t *tr1)
 {
 
 
@@ -394,7 +409,7 @@ transaction_per_period (int nPeriodSeconds, void (*tr1) ())
 }
 
 void
-delivery ()
+delivery (void)
 {
 
   int n;
@@ -460,13 +475,13 @@ run_timed_test (int argc, char **argv)
       start = get_msec_count ();
       for (n = 0; n < 10; n++)
 	{
-	  transaction_per_period (TEN_PACK_TIME / 23, new_order);
-	  transaction_per_period (TEN_PACK_TIME / 23, payment);
+	  transaction_per_period (TEN_PACK_TIME / 23, (transaction_per_period_cbk_t*)new_order);
+	  transaction_per_period (TEN_PACK_TIME / 23, (transaction_per_period_cbk_t*)payment);
 	}
 
-      transaction_per_period (TEN_PACK_TIME / 23, delivery);
-      transaction_per_period (TEN_PACK_TIME / 23, slevel);
-      transaction_per_period (TEN_PACK_TIME / 23, ostat);
+      transaction_per_period (TEN_PACK_TIME / 23, (transaction_per_period_cbk_t*)delivery);
+      transaction_per_period (TEN_PACK_TIME / 23, (transaction_per_period_cbk_t*)slevel);
+      transaction_per_period (TEN_PACK_TIME / 23, (transaction_per_period_cbk_t*)ostat);
 
       duration = (get_msec_count () - start) / 1000;
       if (TEN_PACK_TIME - duration > 0)

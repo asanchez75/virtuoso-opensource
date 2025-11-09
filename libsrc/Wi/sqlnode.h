@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -118,11 +118,12 @@ struct data_source_s
     bitf_t		ssl_is_callret:1; \
     bitf_t		ssl_not_freeable:1; \
     bitf_t		ssl_qr_global:1; /* value either aggregating or invariant across qr */ \
-  bitf_t	ssl_always_vec:1; \
-  bitf_t	ssl_vec_param:2; /* in vectored proc in/inout/out */ \
-  ssl_index_t	ssl_index; \
-  ssl_index_t		ssl_box_index; /*if vectored and needs box for single state ops, place in qst for this */ \
-  sql_type_t		ssl_sqt
+    bitf_t	        ssl_always_vec:1; \
+    bitf_t	        ssl_vec_param:2; /* in vectored proc in/inout/out */ \
+    bitf_t              ssl_vary:1;             /*!< true if ssl belong to gby/distinct as dc may change type, or need ins cast */ \
+    ssl_index_t	        ssl_index; \
+    ssl_index_t		ssl_box_index; /*if vectored and needs box for single state ops, place in qst for this */ \
+    sql_type_t		ssl_sqt
 
 
 struct state_slot_s
@@ -367,7 +368,7 @@ struct query_s
     dk_hash_t 		*qr_line_counts; /* test coverage line stats */
     id_hash_t 		*qr_call_counts;  /* test coverage caller stats */
     long		qr_time_cumulative; /* test coverage cumulative time for execution */
-    long 		qr_self_time;
+    uint64 		qr_self_time;
     dk_mutex_t		*qr_stats_mtx;	  /* for protection on stats hash tables see above */
 #endif
     caddr_t		*qr_udt_mtd_info; /* not null if CREATE METHOD */
@@ -491,7 +492,7 @@ typedef struct query_instance_s
 #ifdef PLDBG
     void * 		qi_last_break;
     int 		qi_step;
-    int 		qi_child_time;
+    uint64 		qi_child_time;
 #endif
   } query_instance_t;
 
@@ -546,7 +547,7 @@ typedef struct hash_area_s
   char	ha_ch_unique;
 } hash_area_t;
 
-#define CHASH_GB_MAX_KEYS 20
+#define CHASH_GB_MAX_KEYS 32
 
 
 #define HA_DISTINCT 1
@@ -810,7 +811,7 @@ typedef struct outer_seq_end_s
   state_slot_t *	ose_prev_set_no;
   state_slot_t **	ose_out_slots; /* the ssls that are null for the outer row */
   state_slot_t **	ose_out_shadow; /* If vectored, ssl vec (not ref) ssls for the nullable columns.  Values are a solid copy of ose out slots */
-  state_slot_t *	ose_bits;
+  state_slot_t *	ose_bits; /* keeps bitmask for outer join set/null */
   state_slot_t *	ose_buffered_row;
   int			ose_last_outer_set; /* set no of the last outer row.  inx of int in qi */
 } outer_seq_end_node_t;
@@ -1587,7 +1588,7 @@ typedef struct srv_stmt_s
     caddr_t *		sst_param_array;
     int			sst_parms_processed;
     struct cursor_state_s * sst_cursor_state;
-    uint32		  sst_start_msec;
+    time_msec_t		  sst_start_msec;
 
 /* PL scrollable */
     int			sst_is_pl_cursor;
@@ -1728,10 +1729,11 @@ typedef struct db_activity_s
   int	da_disk_reads;
   int	da_spec_disk_reads;
   int	da_lock_waits;
-  int	da_lock_wait_msec;
+  int64	da_lock_wait_msec;
   int	da_batch_size_request;
   char		da_anytime_result; /* if set, this means the recipient has run out of time and should return an answer */
   char	da_trans_partial; /* if transitive ops incomplete due to time or mem limit */
+  int64 da_temp_pages;
 } db_activity_t;
 
 
@@ -1809,12 +1811,12 @@ typedef struct client_connection_s
     int64		cli_csl_start_ts;
     db_activity_t	cli_activity;
     db_activity_t	cli_slice_activity;
-    int			cli_anytime_started;
-    int			cli_anytime_timeout;
-    int			cli_anytime_checked;
-    int			cli_anytime_qf_started; /* inside qf/dfg, start time of the slice thread, know when to finish */
-    int 		cli_anytime_timeout_orig;
-    uint32		cli_compile_msec;
+    time_msec_t		cli_anytime_started;
+    uint32		cli_anytime_timeout;
+    time_msec_t		cli_anytime_checked;
+    time_msec_t		cli_anytime_qf_started; /* inside qf/dfg, start time of the slice thread, know when to finish */
+    uint32 		cli_anytime_timeout_orig;
+    int64		cli_compile_msec;
     db_activity_t	cli_compile_activity;
     dk_session_t *	cli_ql_strses;
     user_t *		cli_user;
@@ -1878,8 +1880,8 @@ typedef struct client_connection_s
 #ifdef INPROCESS_CLIENT
     int			cli_inprocess;
 #endif
-    uint32		cli_start_time;
-    uint32		cli_ws_check_time;
+    time_usec_t		cli_start_time_usec;
+    time_msec_t		cli_ws_check_time;
     caddr_t *		cli_info;
     cl_thread_t *	cli_clt; /* if cli of a cluster server thread, this is the clt */
     struct aq_request_s *	cli_aqr; /* if the cli is running an aq func, this is the aqr */
@@ -1887,6 +1889,7 @@ typedef struct client_connection_s
     struct xml_ns_2dict_s      *cli_ns_2dict;
     dk_set_t		cli_dae_blobs;
     char               cli_logged_in;
+    uint32              cli_http_client_req_timeout;
   } client_connection_t;
 
 
@@ -2084,6 +2087,9 @@ extern long blob_releases_noread;
 extern long blob_releases_dir;
 
 extern client_connection_t *autocheckpoint_cli;
+
+void qr_print (query_t * qr);
+
 #include "sqlcomp.h"
 #include "eqlcomp.h"
 #include "sqlfn.h"
@@ -2110,4 +2116,3 @@ extern void log_query_event (query_t *qr, int print_full_content, const char *fm
 #endif
 
 #endif /* _SQLNODE_H */
-void qr_print (query_t * qr);

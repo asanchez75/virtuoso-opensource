@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *  
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *  
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -142,14 +142,20 @@ _cfg_freeent (PCFGENTRY e)
 static int
 _cfg_freeimage (PCONFIG pconfig)
 {
-  char *saveName;
-  OPL_MUTEX_DECLARE (saveMtx);
-
   PCFGENTRY e;
   u_int i;
 
+  /*
+   *  Reset flag so cfg_valid fails
+   */
+  pconfig->flags = 0;
+
+  /*
+   *  Free allocated allocated content
+   */
   if (pconfig->image)
     free (pconfig->image);
+
   if (pconfig->entries)
     {
       e = pconfig->entries;
@@ -158,11 +164,21 @@ _cfg_freeimage (PCONFIG pconfig)
       free (pconfig->entries);
     }
 
-  saveName = pconfig->fileName;
-  saveMtx = pconfig->mtx;
-  memset (pconfig, 0, sizeof (TCONFIG));
-  pconfig->fileName = saveName;
-  pconfig->mtx = saveMtx;
+  /*
+   *  Partially re-initialize struct
+   *
+   *  Dont reset the fileName and mtx fields
+   */
+  pconfig->image = NULL;
+  pconfig->entries = NULL;
+  pconfig->dirty = 0;
+  pconfig->size = 0L;
+  pconfig->mtime = 0L;
+  pconfig->numEntries = 0;
+  pconfig->maxEntries = 0;
+  pconfig->cursor = 0;
+  pconfig->section = pconfig->id = pconfig->value = pconfig->comment = NULL;
+  memset (pconfig->digest, 0, sizeof (digest_t));
 
   return 0;
 }
@@ -989,7 +1005,7 @@ _cfg_digestprintf (MD5_CTX *pMd5, FILE *fd, const char *fmt, ...)
   int retValue;
 
   va_start (ap, fmt);
-  vsprintf (buf, fmt, ap);
+  vsnprintf (buf, sizeof(buf), fmt, ap);
   length = strlen (buf);
   retValue = fwrite (buf, 1, length, fd) == length ? 0 : -1;
   MD5_Update (pMd5, (unsigned char *) buf, (unsigned int) length);

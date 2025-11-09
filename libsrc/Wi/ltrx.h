@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -237,9 +237,9 @@ typedef struct lock_trx_s
     int			lt_close_ack_threads;
     int			lt_vdb_threads;
     uint32		lt_timeout;
-    uint32		lt_started;
-    uint32		lt_last_enter_time;
-    uint32		lt_wait_since;
+    time_msec_t	lt_started;
+    time_msec_t	lt_last_enter_time;
+    time_msec_t	lt_wait_since;
     caddr_t *		lt_replicate;
     int                 lt_repl_is_raw;
     int			lt_log_fd;
@@ -381,7 +381,7 @@ typedef struct lock_wait_s {
   (snprintf (lt->lt_name, sizeof (lt->lt_name), "%d:%u", QFID_HOST (lt->lt_w_id), (uint32)(0xffffffff & (lt)->lt_w_id) ), lt->lt_name)
 
 #define LT_IS_TIMED_OUT(lt) \
-  (lt->lt_started && approx_msec_real_time () - lt->lt_started > lt->lt_timeout)
+  (lt->lt_started && (approx_msec_real_time () - lt->lt_started) > lt->lt_timeout)
 
 #define LOCK \
     lock_trx_t *	pl_owner; \
@@ -648,6 +648,7 @@ typedef void (* srv_background_task_t)(void *appdata);
 
 int srv_add_background_task (srv_background_task_t task, void *appdata);
 void the_grim_lock_reaper (void);
+void the_grim_mem_guard (void);
 
 int lt_set_snapshot (lock_trx_t * lt);
 
@@ -928,5 +929,7 @@ int lt_log_merge (lock_trx_t * lt, int in_txn);
 #define NO_LOCK_LT ((lock_trx_t*)-1L)
 
 int ltbing (int s);
-void ltbing2 ();
 #endif /* _LTRX_H */
+#ifdef DEBUG
+void ltbing2 (void);
+#endif

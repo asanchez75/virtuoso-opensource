@@ -5,7 +5,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -228,7 +228,7 @@ sticker_init() {
   echo "  <name package=\"SyncML\">" >> $STICKER
   echo "    <prop name=\"Title\" value=\"SyncML\"/>" >> $STICKER
   echo "    <prop name=\"Developer\" value=\"OpenLink Software\"/>" >> $STICKER
-  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2021 OpenLink Software\"/>" >> $STICKER
+  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2025 OpenLink Software\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.com/\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.co.uk/\"/>" >> $STICKER
   echo "  </name>" >> $STICKER
@@ -280,8 +280,8 @@ sticker_init() {
   oldIFS="$IFS"
   IFS='
 ' 
-  echo "  <file type=\"dav\" source=\"data\" target_uri=\"SyncML/syncml.sql\" dav_owner=\"dav\" dav_grp=\"administrators\" dav_perm=\"111101101NN\" makepath=\"yes\"/>" >> $STICKER
-  echo "  <file type=\"dav\" source=\"data\" target_uri=\"SyncML/syncml_drop.sql\" dav_owner=\"dav\" dav_grp=\"administrators\" dav_perm=\"111101101NN\" makepath=\"yes\"/>" >> $STICKER
+  echo "  <file type=\"dav\" source=\"data\" target_uri=\"SyncML/syncml.sql\" dav_owner=\"dav\" dav_grp=\"administrators\" dav_perm=\"110100000NN\" makepath=\"yes\"/>" >> $STICKER
+  echo "  <file type=\"dav\" source=\"data\" target_uri=\"SyncML/syncml_drop.sql\" dav_owner=\"dav\" dav_grp=\"administrators\" dav_perm=\"110100000NN\" makepath=\"yes\"/>" >> $STICKER
   IFS="$oldIFS"
   echo "</resources>" >> $STICKER
   echo "<registry>" >> $STICKER

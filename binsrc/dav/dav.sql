@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -34,6 +34,8 @@ create procedure WS.WS."OPTIONS" (in path varchar, inout params varchar, in line
 
   _path := DB.DBA.DAV_CONCAT_PATH ('/', DB.DBA.DAV_CONCAT_PATH (path, '/'));
   _path_id := DB.DBA.DAV_SEARCH_ID (_path, 'C');
+
+  -- CalDAV OPTIONS method specific, need code review
   if (DB.DBA.DAV_HIDE_ERROR (_path_id) is not null)
   {
     _det := DB.DBA.DAV_DET_NAME (_path_id);
@@ -65,6 +67,7 @@ create procedure WS.WS."OPTIONS" (in path varchar, inout params varchar, in line
   _etag := '';
   _ldp_head := '';
 
+  -- LDP/Etag specifics for DETs
   if (DB.DBA.DAV_HIDE_ERROR (_path_id) is not null)
   {
     -- Collection
@@ -99,24 +102,17 @@ create procedure WS.WS."OPTIONS" (in path varchar, inout params varchar, in line
   }
 
 not_found: ;
-  declare headers, acceptPatch, acceptPost, msAuthor any;
+  declare headers, msAuthor any;
 
-  http_methods_set ('COPY', 'DELETE', 'GET', 'HEAD', 'LOCK', 'MKCOL', 'MOVE', 'OPTIONS', 'PATCH', 'POST', 'PROPFIND', 'PROPPATCH', 'PUT', 'TRACE', 'UNLOCK');
+  -- Common case, pure WebDAV or pre-flight to SPARQL endpoint
+  http_methods_set ('COPY', 'DELETE', 'GET', 'HEAD', 'LOCK', 'MKCOL', 'MOVE',
+      'OPTIONS', 'PATCH', 'POST', 'PROPFIND', 'PROPPATCH', 'PUT', 'TRACE', 'UNLOCK');
   WS.WS.GET (path, params, lines);
   http_rewrite ();
-
   headers := http_header_array_get ();
-  acceptPatch := WS.WS.FINDPARAM (headers, 'Accept-Patch');
-  if (acceptPatch <> '')
-    acceptPatch := sprintf ('Accept-Patch: %s\r\n', acceptPatch);
-
-  acceptPost := WS.WS.FINDPARAM (headers, 'Accept-Post');
-  if (acceptPost <> '')
-    acceptPost := sprintf ('Accept-Post: %s\r\n', http_request_header (headers, 'Accept-Post', null, 'text/turtle, text/html, application/xhtml+xml, application/ld+json'));
   msAuthor := WS.WS.FINDPARAM (headers, 'MS-Author-Via');
   if (msAuthor <> '')
     msAuthor := sprintf ('MS-Author-Via: %s\r\n', http_request_header (headers, 'MS-Author-Via', null, 'DAV'));
-
   DB.DBA.DAV_SET_HTTP_STATUS (204);
   http_header (
     'X-Powered-By: Virtuoso Universal Server ' || sys_stat ('st_dbms_ver') || '\r\n' ||
@@ -124,14 +120,7 @@ not_found: ;
     'DAV: 1,2,<http://www.openlinksw.com/virtuoso/webdav/1.0>\r\n' ||
     _ldp_head ||
     'Access-Control-Allow-Methods: COPY, DELETE, GET, HEAD, LOCK, MOVE, MKCOL, OPTIONS, PATCH, POST, PROPFIND, PROPPATCH, PUT, TRACE, UNLOCK\r\n' ||
-    'Access-Control-Allow-Headers: Accept, Authorization, Content-Length, Content-Type, Depth, If-None-Match, Link, Location, On-Behalf-Of, Origin, WebID-TLS, Slug, X-Requested-With\r\n' ||
-    'Access-Control-Expose-Headers: Accept-Patch, Accept-Post, Access-Control-Allow-Headers, Access-Control-Allow-Methods, Access-Control-Allow-Origin, Allow, Authorization, Content-Length, Content-Type, ETag, Last-Modified, Link, Location, Updates-Via, User, Vary, WAC-Allow, WWW-Authenticate\r\n' ||
-    'Access-Control-Allow-Credentials: true\r\n' ||
-    'Access-Control-Max-Age: 1728000\r\n' ||
-    acceptPatch ||
-    acceptPost ||
-    msAuthor
-  );
+    msAuthor);
 }
 ;
 
@@ -460,7 +449,7 @@ create procedure WS.WS.PROPFIND_RESPONSE_FORMAT (
       }
       else if (prop = ':displayname')
       {
-        http (sprintf ('<D:displayname>%V</D:displayname>\n', name));
+        http (sprintf ('<D:displayname>%V</D:displayname>\n', __box_flags_tweak (name,2)));
         found_sprop := 1;
       }
       else if (prop = ':getlastmodified')
@@ -743,7 +732,7 @@ create procedure WS.WS.PROPFIND_RESPONSE_FORMAT (
       foreach (any prop in props) do
       {
         prop1 := prop[0];
-        if ((prop1 = 'LDP') or (prop1 like 'virt:%') or (prop1 like 'http://www.openlinksw.com/schemas/%') or (prop1 like 'http://local.virt/DAV-RDF%'))
+        if ((prop1 = 'LDP') or (prop1 like 'virt:%') or (prop1 like 'oWiki:%') or (prop1 like 'http://www.openlinksw.com/schemas/%') or (prop1 like 'http://local.virt/DAV-RDF%') or (prop1 = 'content-callback-function'))
           goto _skip2;
 
         WS.WS.PROPFIND_RESPONSE_FORMAT_CUSTOM (prop1, prop1, prop[1]);
@@ -1142,7 +1131,7 @@ create procedure WS.WS.CUSTOM_PROP (
   foreach (any prop in props) do
   {
     prop_name := prop[0];
-    if ((prop_name = 'LDP') or (prop_name like 'virt:%') or (prop_name like 'http://www.openlinksw.com/schemas/%') or (prop_name like 'http://local.virt/DAV-RDF%'))
+    if ((prop_name = 'LDP') or (prop_name like 'virt:%') or (prop_name like 'http://www.openlinksw.com/schemas/%') or (prop_name like 'http://local.virt/DAV-RDF%') or (prop_name = 'content-callback-function'))
       goto _skip;
 
     prop_value := prop[1];
@@ -1232,10 +1221,11 @@ create procedure WS.WS.PROPPATCH_INT (
   in gid integer,
   in mode varchar := 'proppatch')
 {
-  -- dbg_obj_princ ('WS.WS.PROPPATCH_INT (', path, params, lines, ')');
+  -- dbg_obj_princ ('WS.WS.PROPPATCH_INT (', path, params, lines, id, st, auth_uid, auth_pwd, uid, gid, ')');
   declare _body any;
   declare rc, rc_all, xtree, xtd any;
   declare po, pn, pns, pv, prop_name, props, rc_prop any;
+  declare lpath varchar;
 
   rc_all := id;
   _body := aref_set_0 (params, 1);
@@ -1277,6 +1267,13 @@ create procedure WS.WS.PROPPATCH_INT (
   http ('<?xml version="1.0" encoding="utf-8" ?>\n', rc);
   http ('<D:multistatus xmlns:D="DAV:">\n', rc);
   http ('<D:response>\n', rc);
+  if (mode = 'proppatch')
+    {
+      lpath := http_path ();
+      if (st = 'C' and lpath not like '%/')
+        lpath := concat (lpath, '/');
+      http (sprintf ('<D:href>%V</D:href>\n', DB.DBA.DAV_HREF_URL (lpath)), rc);
+    }
 
   xtd := xml_tree_doc (xtree);
   props := xpath_eval ('/propertyupdate/*/prop/*', xtd, 0);
@@ -1764,6 +1761,8 @@ create procedure WS.WS.DAV_LINK (in p varchar)
   def := registry_get ('URIQADefaultHost');
   h := sprintf ('%s://%s', case when is_https_ctx () then 'https' else 'http' end, http_host (def));
   s := string_output ();
+  if (isstring (p))
+    __box_flags_set (p, 2);
   http_dav_url (p, null, s);
   s := string_output_string (s);
   return h || s;
@@ -1823,6 +1822,7 @@ create procedure WS.WS.PUT (
 
   _atomPub := 0;
   content_type := WS.WS.FINDPARAM (lines, 'Content-Type');
+  content_type := trim (content_type, '\r\n ');
   content_type_attr := http_request_header (lines, 'Content-Type', 'type', '');
   _method := http_request_get ('REQUEST_METHOD');
   rc_type := 'R';
@@ -2053,7 +2053,7 @@ create procedure WS.WS.PUT (
       return;
     }
   }
-  else if ((content_type = 'text/turtle') and not DB.DBA.DAV_MAC_METAFILE (full_path))
+  else if ((content_type = 'text/turtle' or content_type = 'application/ld+json') and not DB.DBA.DAV_MAC_METAFILE (full_path))
   {
     declare gr, newGr, newPath, link, arr, is_container any;
 
@@ -2064,12 +2064,15 @@ create procedure WS.WS.PUT (
     if ((length (arr) = 4 and arr[0] = '<http://www.w3.org/ns/ldp#BasicContainer>') or _col is not null)
     {
       is_container := 1;
-      if (length (ses) = 0)
+      if (length (ses) = 0 and content_type = 'text/turtle')
         http ('<> a <http://www.w3.org/ns/ldp#BasicContainer>. ', ses);
 
       full_path := newPath;
     }
-    rc := WS.WS.TTL_QUERY_POST (full_path, ses, case when _col is not null or is_container then 0 else 1 end);
+    if (content_type = 'text/turtle')
+      rc := WS.WS.TTL_QUERY_POST (full_path, ses, case when _col is not null or is_container then 0 else 1 end);
+    else
+      rc := WS.WS.JSONLD_POST (full_path, ses, case when _col is not null or is_container then 0 else 1 end);
     if (DAV_HIDE_ERROR (rc) is null)
       goto error_ret;
 
@@ -2271,7 +2274,7 @@ create procedure WS.WS.PATCH (
 
     giid := iri_to_id (WS.WS.DAV_IRI (full_path));
     set_user_id ('dba');
-    exec ('sparql define output:format "NICE_TTL" construct { ?s ?p ?o } where { graph ?? { ?s ?p ?o }}', null, null, vector (giid), 0, meta, data);
+    exec ('sparql define input:storage "" define output:format "NICE_TTL" construct { ?s ?p ?o } where { graph ?? { ?s ?p ?o }}', null, null, vector (giid), 0, meta, data);
     if (not (isvector (data) and length (data) = 1 and isvector (data[0]) and length (data[0]) = 1 and __tag (data[0][0]) = __tag of stream))
       goto _skip;
 
@@ -2588,7 +2591,7 @@ again:
         goto _500;
 
       DB.DBA.DAV_SET_HTTP_STATUS (200);
-      http_header ('Content-Type: text/turtle\r\n');
+      http_header (DB.DBA.DAV_CONTENT_TYPE ('text/turtle'));
       server_etag := WS.WS.ETAG_BY_ID (meta_id, meta_what);
       if (server_etag is not null)
         http_header (http_header_get () || sprintf ('ETag: "%s"\r\n', server_etag));
@@ -2621,7 +2624,7 @@ again:
         goto _500;
 
       DB.DBA.DAV_SET_HTTP_STATUS (200);
-      http_header ('Content-Type: text/turtle\r\n');
+      http_header (DB.DBA.DAV_CONTENT_TYPE ('text/turtle'));
       server_etag := WS.WS.ETAG_BY_ID (meta_id, meta_what);
       if (server_etag is not null)
         http_header (http_header_get () || sprintf ('ETag: "%s"\r\n', server_etag));
@@ -3014,6 +3017,12 @@ again:
     if (DB.DBA.DAV_DET_IS_WEBDAV_BASED (DB.DBA.DAV_DET_NAME (_res_id)) and (_accept = 'text/html') and WS.WS.TTL_REDIRECT (_col, full_path, cont_type))
       return;
 
+      if (not isinteger (_res_id) and http_request_status_code_get() > 399)
+        {
+          http (content);
+          return;
+        }
+
     _sse_cont_type := cont_type;
     cont_type := case when not _sse_mime_encrypt then cont_type else 'message/rfc822' end;
 
@@ -3098,7 +3107,7 @@ again:
           hdr_str := http_header_get ();
           hdr_str := hdr_str || 'ETag: "' || server_etag || '"\r\n';
           if (strcasestr (hdr_str, 'Content-Type:') is null)
-            hdr_str := hdr_str || 'Content-Type: ' || cont_type || '\r\n';
+            hdr_str := hdr_str || DB.DBA.DAV_CONTENT_TYPE (cont_type);
 
           if (modt is not null and strcasestr (hdr_str, 'Last-Modified:') is null)
             hdr_str := hdr_str || sprintf ('Last-Modified: %s\r\n', DB.DBA.DAV_RESPONSE_FORMAT_DATE (modt, '', 1));
@@ -3119,7 +3128,7 @@ again:
         }
         else
         {
-          http_header ('Content-Type: text/xml\r\nETag: "' || server_etag || '"\r\n');
+          http_header (DB.DBA.DAV_CONTENT_TYPE ('text/xml') || 'ETag: "' || server_etag || '"\r\n');
         }
       }
     }
@@ -3131,7 +3140,8 @@ again:
 
     if (client_etag <> server_etag)
     {
-      DB.DBA.DAV_SET_HTTP_STATUS (200);
+      if (isinteger (_res_id) or http_request_status_get() is null)
+        DB.DBA.DAV_SET_HTTP_STATUS (200);
       xpr := get_keyword ('XPATH', params, '/*');
       if (cont_type = 'xml/view')
       {
@@ -3185,7 +3195,7 @@ again:
         if (stat = '00000')
           return;
 
-        http_header (concat ('Content-Type: text/html\r\n'));
+        http_header (DB.DBA.DAV_CONTENT_TYPE ('text/html'));
         http (concat ('SQL Error: ', stat, ' ', msg));
         return;
       }
@@ -3376,64 +3386,64 @@ create procedure WS.WS.LDP_HDRS (
   in path varchar := null,
   in contentType varchar := null)
 {
-  declare link, header, msAuthor, acceptPatch, acceptPost, netID any;
+  declare link, header, netID, ses any;
 
-  msAuthor := sprintf ('MS-Author-Via: %s\r\n', case when add_rel then 'DAV, SPARQL' else 'DAV' end);
-  acceptPatch := case when add_rel then 'Accept-Patch: application/sparql-update\r\n' else '' end;
-  acceptPost := sprintf ('Accept-Post: %s\r\n', case when add_rel then 'text/turtle, text/n3, text/nt, text/html, application/ld+json' else '*/*' end);
-  header := 'Allow: COPY, DELETE, GET, HEAD, LOCK, MKCOL, MOVE, OPTIONS, PATCH, POST, PROPFIND, PROPPATCH, PUT, TRACE, UNLOCK\r\n' ||
-            'Vary: Accept-Encoding, Access-Control-Request-Headers, Origin\r\n' ||
-            msAuthor ||
-            acceptPatch ||
-            acceptPost;
+  ses := string_output ();
+  http ('Allow: COPY, DELETE, GET, HEAD, LOCK, MKCOL, MOVE, OPTIONS, PATCH, POST, PROPFIND, PROPPATCH, PUT, TRACE, UNLOCK\r\n', ses);
+  http ('Vary: Accept-Encoding, Access-Control-Request-Headers, Origin\r\n', ses);
+  if (add_rel)
+    { 
+      http ('MS-Author-Via: DAV,SPARQL\r\n', ses);
+      http ('Accept-Patch: application/sparql-update\r\n', ses);
+      http ('Accept-Post: text/turtle, text/n3, text/nt, text/html, application/ld+json\r\n', ses);
+    }
+  else
+    {
+      http ('MS-Author-Via: DAV\r\n', ses);
+      http ('Accept-Post: */*\r\n', ses);
+    }
+
   netID := connection_get ('NetId');
   if (netID is not null)
-    header := header || sprintf ('User: <%s>\r\n', netID);
+    http (sprintf ('User: <%s>\r\n', netID), ses);
 
   if (add_rel)
-  {
-    header := header || 'Link: <http://www.w3.org/ns/ldp#Resource>; rel="type"\r\n';
-    if (is_col)
     {
-      header := header ||
-                'Link: <http://www.w3.org/ns/ldp#RDFSource>; rel="type"\r\n'  ||
-                'Link: <http://www.w3.org/ns/ldp#BasicContainer>; rel="type"\r\n';
-    }
-    else
-    {
-      if (contentType = 'text/turtle')
-      {
-        header := header || 'Link: <http://www.w3.org/ns/ldp#RDFSource>; rel="type"\r\n';
-      }
+      http ('Link: <http://www.w3.org/ns/ldp#Resource>; rel="type"\r\n', ses);
+      if (is_col)
+        {
+          http ('Link: <http://www.w3.org/ns/ldp#RDFSource>; rel="type"\r\n', ses);
+          http ('Link: <http://www.w3.org/ns/ldp#BasicContainer>; rel="type"\r\n', ses);
+        }
       else
-      {
-        link := WS.WS.DAV_LINK (rtrim (path, '/'));
-        header := header ||
-                  'Link: <http://www.w3.org/ns/ldp#NonRDFSource>; rel="type"\r\n' ||
-                  sprintf ('Link: <%s,meta>; rel="describedby"\r\n', link);
-      }
+        {
+          if (contentType = 'text/turtle' or contentType = 'application/ld+json')
+            http ('Link: <http://www.w3.org/ns/ldp#RDFSource>; rel="type"\r\n', ses);
+          else if (path is not null)
+            {
+              link := WS.WS.DAV_LINK (rtrim (path, '/'));
+              http ('Link: <http://www.w3.org/ns/ldp#NonRDFSource>; rel="type"\r\n', ses);
+              http (sprintf ('Link: <%s,meta>; rel="describedby"\r\n', link), ses);
+            }
+        }
     }
-  }
 
   if (page > 0)
-    header := header || 'Link: <?p=1>; rel="first"\r\n';
-
+    http ('Link: <?p=1>; rel="first"\r\n', ses);
   if (last > 0)
-    header := header || sprintf ('Link: <?p=%d>; rel="last"\r\n', last);
+    http (sprintf ('Link: <?p=%d>; rel="last"\r\n', last), ses);
 
   if (path is not null)
-  {
-    declare hdr_str varchar;
-
-    hdr_str := http_header_get ();
-    link := WS.WS.DAV_LINK (rtrim (path, '/'));
-    if ((strcasestr (hdr_str, 'rel="meta"') is null) and (link not like '%,meta'))
-      header := header || sprintf ('Link: <%s,meta>; rel="meta"; title="Metadata File"\r\n', link);
-
-    if ((strcasestr (hdr_str, 'rel="acl"') is null) and (link not like '%,acl') and not isnull (WS.WS.DAV_ACL (path)))
-      header := header || sprintf ('Link: <%s,acl>; rel="acl"; title="Access Control File"\r\n', link);
-  }
-
+    {
+      declare hdr_str varchar;
+      hdr_str := http_header_get ();
+      link := WS.WS.DAV_LINK (rtrim (path, '/'));
+      if ((strcasestr (hdr_str, 'rel="meta"') is null) and (link not like '%,meta'))
+        http (sprintf ('Link: <%s,meta>; rel="meta"; title="Metadata File"\r\n', link), ses);
+      if ((strcasestr (hdr_str, 'rel="acl"') is null) and (link not like '%,acl') and not isnull (WS.WS.DAV_ACL (path)))
+        http (sprintf ('Link: <%s,acl>; rel="acl"; title="Access Control File"\r\n', link), ses);
+    }
+  header := string_output_string (ses);
   return header;
 }
 ;
@@ -3473,10 +3483,10 @@ create procedure WS.WS.GET_EXT_DAV_LDP (
   -- dbg_obj_princ ('WS.WS.GET_EXT_DAV_LDP (', _res_id, _col_id, ')');
   declare accept, accept_mime, accept_full, accept_profile, name_ varchar;
   declare mod_time datetime;
-  declare gr, as_define, as_part, as_part2, as_limit, as_offset varchar;
+  declare gr, as_define, as_limit, as_offset varchar;
   declare id_ integer;
   declare pref_mime varchar;
-  declare fmt, etag, qr varchar;
+  declare fmt, etag, qr, det varchar;
   declare n_page, n_count, n_last, n_per_page, is_col integer;
 
   -- macOS WebDAV request
@@ -3495,27 +3505,17 @@ create procedure WS.WS.GET_EXT_DAV_LDP (
 
   accept_full := http_request_header_full (lines, 'Accept', '*/*');
   accept_mime := HTTP_RDF_GET_ACCEPT_BY_Q (accept_full, pref_mime);
-  if ((pref_mime = 'application/ld+json') and (accept_mime not in ('*/*', 'application/ld+json')))
-    return 0;
-
   accept := accept_mime;
-  if (accept = '*/*' and isinteger (_res_id))
-  {
-    if (pref_mime = 'text/turtle')
-    {
-      accept := 'text/turtle';
-    }
-    else if (pref_mime = 'application/ld+json')
-    {
-      accept := 'application/ld+json';
-    }
-  }
 
-  if (not position (accept, DB.DBA.LDP_RDF_TYPES ()))
+  if ((accept = '*/*' or accept = 'text/*') and (pref_mime in ('text/turtle', 'application/ld+json') or DB.DBA.LDP_ENABLED (_col_id)))
+    accept := 'text/turtle';
+
+  if (accept <> 'text/turtle' and accept <> 'application/ld+json')
     return 0;
 
   fmt := accept;
   is_col := 0;
+  det := null;
   if (fmt = 'text/turtle')
     fmt := 'application/x-nice-turtle';
 
@@ -3573,43 +3573,39 @@ create procedure WS.WS.GET_EXT_DAV_LDP (
     return 0;
 
   if (not (exists (sparql define input:storage "" select (1) where { graph `iri(?:gr)` { ?s ?p ?o }})))
-  {
-    if (isinteger (DB.DBA.DAV_DET_DAV_ID (_res_id)) and (pref_mime not in ('text/turtle')))
     {
-      declare i integer;
-      declare tmp, V any;
+      if (isinteger (DB.DBA.DAV_DET_DAV_ID (_res_id)) and (pref_mime not in ('text/turtle', 'application/ld+json')))
+        {
+          declare i integer;
+          declare tmp, V any;
 
-      V := split_and_decode (accept_full, 0, '\0\0,;');
-      for (i := 0; i < length (V); i := i + 2)
-      {
-        tmp := replace (trim (V[i]), '*', '%');
-        if (pref_mime like tmp)
-          return 0;
-      }
+          V := split_and_decode (accept_full, 0, '\0\0,;');
+          for (i := 0; i < length (V); i := i + 2)
+            {
+              tmp := replace (trim (V[i]), '*', '%');
+              if (pref_mime like tmp)
+                return 0;
+            }
+        }
+      DB.DBA.DAV_SET_HTTP_STATUS (406, '406 Not Acceptable', '406 Not Acceptable',
+         sprintf ('<p>An appropriate representation of the requested resource %s could not be found on this server.</p>', full_path));
+      return 1;
     }
-    DB.DBA.DAV_SET_HTTP_STATUS (406, '406 Not Acceptable', '406 Not Acceptable', sprintf ('<p>An appropriate representation of the requested resource %s could not be found on this server.</p>', full_path));
-    return 1;
-  }
 
   n_per_page := 10000;
   n_page := atoi (get_keyword ('p', params, '1'));
   n_count := (sparql define input:storage "" select count(1) where { graph `iri(?:gr)` { ?s ?p ?o }});
   n_last := (n_count / n_per_page) + 1;
-  http_header (sprintf('Content-Type: %s\r\n%s', accept, WS.WS.LDP_HDRS (is_col, 1, n_page, n_last, full_path)));
+  http_header (sprintf('Content-Type: %s\r\n%s', accept, WS.WS.LDP_HDRS (is_col, 1, n_page, n_last, full_path, pref_mime)));
 
   etag := WS.WS.ETAG (name_, id_, mod_time);
   if (isstring (etag))
     http_header (http_header_get () || sprintf('ETag: "%s"\r\n', etag));
-
-  accept_profile := case when (accept = 'application/ld+json') then DB.DBA.LDP_ACCEPT_PARAM (accept_full, accept_mime, 'profile') else null end;
+  accept_profile := http_request_header (lines, 'Accept', 'profile', null);
   as_define := '';
-  as_part := ' ?dyn_s ?p ?dyn_o . ';
-  as_part2 := ' ?dyn_o a ?t . ';
-  if (accept_profile = '"https://www.w3.org/ns/activitystreams"')
+  if (accept = 'application/ld+json' and accept_profile = 'https://www.w3.org/ns/activitystreams')
   {
     as_define := 'define input:inference "asEquivalent" ';
-    as_part := ' ?dyn_s `if (regex (str (?p), \'http://www.w3.org/ns/activitystreams#\') || regex (str (?p), \'http://www.w3.org/1999/02/22-rdf-syntax-ns#\'), ?p, ?x)` `if (regex (str (?dyn_o), \'http://www.w3.org/ns/activitystreams#\') || regex (str (?p), \'http://www.w3.org/ns/activitystreams\'), ?dyn_o, ?y)` .' ;
-    as_part2 := '';
   }
   as_limit := '';
   if (n_count > n_per_page)
@@ -3623,20 +3619,18 @@ create procedure WS.WS.GET_EXT_DAV_LDP (
                  'define input:storage "" %s ' ||
                  'construct ' ||
                  '  { ' ||
-                 '     %s %s' ||
+                 '     ?dyn_s ?p ?dyn_o . ?dyn_o a ?t . ' ||
                  '  } ' ||
                  'where ' ||
                  '  { ' ||
                  '    ?s ?p ?o option (table_option "index G") . ' ||
-                 '    optional { graph ?g { ?o a ?t option (table_option "index primary key") } } . ' ||
+                 '    optional { ?o a ?t option (table_option "index primary key") } . ' ||
                  '    BIND (sql:dynamic_host_name(?s) as ?dyn_s) .' ||
                  '    BIND (sql:dynamic_host_name(?o) as ?dyn_o) .' ||
                  '  } ' ||
                  'order by ?s ?p ?o ' ||
                  '%s %s',
                  as_define,
-                 as_part,
-                 as_part2,
                  as_limit,
                  as_offset
                 );
@@ -3698,7 +3692,7 @@ create procedure WS.WS.POST (
       }
     WS.WS.PUT (path, params, lines);
   }
-  else if (position (_content_type, DB.DBA.LDP_RDF_TYPES ()) or (length (slug) > 0))
+  else if ((_content_type = 'text/turtle' or _content_type = 'application/ld+json' or (length (slug) > 0)) and http_map_get('domain') <> '/sparql')
   {
     declare cid integer;
 
@@ -3719,11 +3713,11 @@ create procedure WS.WS.POST (
         ppath := rtrim (http_physical_path (), '/');
         meta := iri_to_id (WS.WS.DAV_IRI (ppath || ',meta'));
         cont := iri_to_id (WS.WS.DAV_IRI (ppath || '/'));
-        p := (sparql select ?pref where { graph ?:meta { ?:cont <http://ns.rww.io/ldpx#ldprPrefix> ?pref . }});
+        p := (sparql define input:storage "" select ?pref where { graph ?:meta { ?:cont <http://ns.rww.io/ldpx#ldprPrefix> ?pref . }});
         if (p is null)
         {
           cont := iri_to_id (WS.WS.DAV_IRI (ppath));
-          p := (sparql select ?pref where { graph ?:meta { ?:cont <http://ns.rww.io/ldpx#ldprPrefix> ?pref . }});
+          p := (sparql define input:storage "" select ?pref where { graph ?:meta { ?:cont <http://ns.rww.io/ldpx#ldprPrefix> ?pref . }});
         }
         if (p is not null)
         {
@@ -3851,12 +3845,70 @@ create procedure WS.WS.TTL_QUERY_PREFIXES (
 }
 ;
 
+create procedure WS.WS.JSONLD_POST (in path varchar, inout ses varchar, in is_resource integer := 0)
+{
+  #pragma prefix ldp: <http://www.w3.org/ns/ldp#>
+  declare uri, giid, flags, content any;
+
+  declare exit handler for sqlstate '*'
+  {
+    connection_set ('__SQL_STATE', __SQL_STATE);
+    connection_set ('__SQL_MESSAGE', __SQL_MESSAGE);
+    return -44;
+  };
+  set_user_id ('dba');
+  flags := 0;
+  uri := WS.WS.DAV_IRI (path);
+  giid := iri_to_id (uri);
+  log_enable (3);
+  if (is_resource)
+    {
+      sparql clear graph ?:giid;
+      sparql insert into ?:giid { ?:giid a ldp:Resource, rdfs:Resource . };
+    }
+  else
+    {
+      sparql define input:storage "" delete from graph ?:giid { ?s ?p ?o } where { graph ?:giid { ?s ?p ?o .  filter (?p not in (rdf:type, ldp:contains)) . }};
+    }
+  if (__tag (ses) = __tag of stream)
+    content := string_output_string (ses);
+  else if (__tag (ses) = __tag of varchar)
+    content := ses;
+  else
+    content := cast (ses as varchar);
+  if (length (content))
+    DB.DBA.RDF_LOAD_JSON_LD (content, uri, uri, flags);
+  if (uri like '%,meta')
+    {
+      declare subj, nsubj, org_path any;
+      org_path := replace (path, ',meta', '');
+      subj := iri_to_id (WS.WS.DAV_LINK (org_path));
+      nsubj := iri_to_id (WS.WS.DAV_IRI (org_path));
+      if (nsubj <> subj)
+        {
+          sparql define input:storage "" insert into graph ?:giid { ?:nsubj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+          sparql define input:storage "" delete from graph ?:giid { ?:subj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+        }
+      org_path := org_path || '/';
+      subj := iri_to_id (WS.WS.DAV_LINK (org_path));
+      nsubj := iri_to_id (WS.WS.DAV_IRI (org_path));
+      if (nsubj <> subj)
+        {
+          sparql define input:storage "" insert into graph ?:giid { ?:nsubj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+          sparql define input:storage "" delete from graph ?:giid { ?:subj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+        }
+    }
+  return 0;
+}
+;
+
 create procedure WS.WS.TTL_QUERY_POST (
   in path varchar,
   inout ses varchar,
   in is_resource integer := 0)
 {
   -- dbg_obj_princ ('WS.WS.TTL_QUERY_POST (', path, __tag (ses), is_resource, ')');
+  #pragma prefix ldp: <http://www.w3.org/ns/ldp#>
   declare step integer;
   declare ldp_resource varchar;
   declare ns, def_gr, giid, dict, triples, prefixes, flags any;
@@ -3891,16 +3943,14 @@ create procedure WS.WS.TTL_QUERY_POST (
   giid := iri_to_id (def_gr);
   log_enable (3);
   if (is_resource)
-  {
-    WS.WS.TTL_QUERY_POST_CLEAR (path);
-    ldp_resource := sprintf ('<%s> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/ldp#Resource>, <http://www.w3.org/2000/01/rdf-schema#Resource> .', def_gr);
-    DB.DBA.TTLP (ldp_resource, '', def_gr);
-  }
+    {
+      sparql clear graph ?:giid;
+      sparql insert into ?:giid { ?:giid a ldp:Resource, rdfs:Resource . };
+    }
   else
-  {
-    sparql delete from graph ?:giid { ?s ?p ?o } where { graph ?:giid { ?s ?p ?o .
-    filter (?p not in (<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>, <http://www.w3.org/ns/ldp#contains>)) . } };
-  }
+    {
+      sparql define input:storage "" delete from graph ?:giid { ?s ?p ?o } where { graph ?:giid { ?s ?p ?o .  filter (?p not in (rdf:type, ldp:contains)) . }};
+    }
 
   -- Varbinary
   if (__tag (ses) = 222)
@@ -3948,16 +3998,16 @@ _exit:;
     nsubj := iri_to_id (WS.WS.DAV_IRI (org_path));
     if (nsubj <> subj)
   	{
-  	  sparql insert into graph ?:giid { ?:nsubj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
-  	  sparql delete from graph ?:giid { ?:subj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+  	  sparql define input:storage "" insert into graph ?:giid { ?:nsubj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+  	  sparql define input:storage "" delete from graph ?:giid { ?:subj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
   	}
     org_path := org_path || '/';
     subj := iri_to_id (WS.WS.DAV_LINK (org_path));
     nsubj := iri_to_id (WS.WS.DAV_IRI (org_path));
     if (nsubj <> subj)
   	{
-  	  sparql insert into graph ?:giid { ?:nsubj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
-  	  sparql delete from graph ?:giid { ?:subj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+  	  sparql define input:storage "" insert into graph ?:giid { ?:nsubj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
+  	  sparql define input:storage "" delete from graph ?:giid { ?:subj ?p ?o } where { graph ?:giid { ?:subj ?p ?o }};
   	}
   }
   ses := ns;
@@ -4149,9 +4199,14 @@ create procedure WS.WS.SPARQL_QUERY_GET (in content any, in full_path varchar, i
 create procedure WS.WS.SPARQL_QUERY_UPDATE (in content any, in full_path varchar, in path any, inout lines any)
 {
   declare params, data any;
+  declare document_uri, query_string varchar;
 
   connection_set ('SPARQLUserId', 'SPARQL_ADMIN');
-  params := vector ('query', string_output_string (content), 'default-graph-uri', WS.WS.DAV_IRI (full_path));
+  query_string := string_output_string (content);
+  document_uri := WS.WS.DAV_IRI (full_path);
+  if (regexp_match ('^(\\s+)?(base)\\s+<[^>]+>', query_string, 0, 'i') is null)
+    query_string := concat (sprintf ('BASE <%s> \n', document_uri), query_string);
+  params := vector ('query', query_string, 'default-graph-uri', document_uri);
   WS.WS."/!sparql/" (path, params, lines);
   data := http_get_string_output ();
   if (data like 'Virtuoso %')
@@ -6449,7 +6504,9 @@ create function WS.WS.DAV_DIR_LIST (
 {
   -- dbg_obj_princ ('WS.WS.DAV_DIR_LIST (', full_path, logical_root_path, col, auth_uname, auth_pwd, auth_uid, ')');
   declare _dir, _dir_item, _dir_entry, _xml, _modify, fsize, _html, _b_opt, _xml_sheet any;
-  declare _name, xslt_file, xslt_folder, vspx_path varchar;
+  declare _dir_item_mimetype any;
+  declare _host any;
+  declare _name, xslt_file, xslt_folder, vspx_path, item_title, feed_title varchar;
   declare _res_len, flen, mult, N integer;
   declare _dir_len, _dir_ctr integer;
   declare _user_name, _group_name varchar;
@@ -6483,40 +6540,62 @@ create function WS.WS.DAV_DIR_LIST (
   if (isinteger (_dir))
     return _dir;
 
+  -- _host := sprintf ('%{WSBaseUrl}s');
+  _host := registry_get ('URIQADefaultHost');
+  _host := sprintf ('%s://%s', case when is_https_ctx () then 'https' else 'http' end, http_host (_host));
+  feed_title := DB.DBA.DAV_HIDE_ERROR(DB.DBA.DAV_PROP_GET_INT(DAV_SEARCH_ID (full_path,'C'), 'C', 'title', 0));
+
   _dir_len := length (_dir);
   if (action = 'opml')
   {
+    if (feed_title is null)
+      feed_title := concat ('WebDAV Directory ', cast (full_path as varchar));
     _dir_entry := DAV_DIR_SINGLE_INT (col, 'C', full_path, null, null, http_dav_uid ());
   	http_header ('Content-type: text/xml; charset="UTF-8"\r\n');
     http ('<?xml version="1.0" encoding="UTF-8" ?>');
     http ('<opml version="2.0">');
 	  http ('<head>');
-		http (sprintf ('<title>WebDAV Directory %s"</title>', cast (full_path as varchar)));
+    http (sprintf ('<title>%V</title>', feed_title));
 		http (sprintf ('<dateCreated>%s</dateCreated>', DB.DBA.DAV_RESPONSE_FORMAT_DATE (_dir_entry[8], '', 1)));
 		http (sprintf ('<dateModified>%s</dateModified>', DB.DBA.DAV_RESPONSE_FORMAT_DATE (_dir_entry[3], '', 1)));
-		http (sprintf ('<ownerName>%s</ownerName>', coalesce ((select U_NAME from DB.DBA.SYS_USERS where U_ID = _dir_entry[7]), 'nobody')));
+    http (sprintf ('<ownerName>%s</ownerName>', coalesce (uid_to_user(coalesce (_dir_entry[7],-1)), 'nobody')));
     http ('</head>');
 	  http ('<body>');
+    http (sprintf ('<outline text="%V" htmlUrl="%H" type="rss" xmlUrl="%H?a=rss" />',
+        feed_title, _host || cast(full_path as varchar), _host || cast(full_path as varchar)));
     for (_dir_ctr := 0; _dir_ctr < _dir_len; _dir_ctr := _dir_ctr + 1)
     {
       _dir_item := _dir [_dir_ctr];
+       _dir_item_mimetype := _dir_item[9];
       if (_dir_item[1] = 'C')
       {
-    		http (sprintf ('<outline text="WebDAV Directory %V" htmlUrl="%V" type="rss" xmlUrl="%V?a=rss" />', _dir_item[0], WS.WS.DAV_HOST () || _dir_item[0], WS.WS.DAV_HOST () || _dir_item[0]));
-  	  }
+        item_title := DB.DBA.DAV_HIDE_ERROR(DB.DBA.DAV_PROP_GET_INT(aref(_dir_item,4), 'C', 'title', 0));
+        if (item_title is null)
+          item_title := concat ('WebDAV Directory ', _dir_item[0]);
+        http (sprintf ('<outline text="%V" htmlUrl="%H" type="rss" xmlUrl="%H?a=rss" />', item_title, _host || _dir_item[0], _host || _dir_item[0]));
+      }
+      if (_dir_item_mimetype like '%rss%' or _dir_item_mimetype like '%atom%')
+      {
+        item_title := DB.DBA.DAV_HIDE_ERROR(DB.DBA.DAV_PROP_GET_INT(aref(_dir_item,4), _dir_item[1], 'title', 0));
+        if (item_title is null)
+          item_title := concat ('Feed ', _dir_item[0]);
+        http (sprintf ('<outline text="%V" htmlUrl="%H" xmlUrl="%H" />', item_title, _host || _dir_item[0], _host || _dir_item[0]));
+      }
     }
 	  http ('</body>');
 	  http ('</opml>');
-	}
+  }
   else if (action = 'atomPub')
   {
+    if (feed_title is null)
+      feed_title := concat ('WebDAV Directory ', cast (full_path as varchar));
     _dir_entry := DAV_DIR_SINGLE_INT (col, 'C', full_path, null, null, http_dav_uid ());
   	http_header ('Content-type: text/xml; charset="UTF-8"\r\n');
     http (         '<?xml version="1.0" encoding="UTF-8" ?>');
     http (         '<service xmlns="http://www.w3.org/2007/app" xmlns:atom="http://www.w3.org/2005/Atom">');
     http (         '  <workspace>');
-    http (         '    <atom:title>WebDAV AtomPub</atom:title>');
-    http (sprintf ('    <collection href="%V" >', WS.WS.DAV_HOST () || _dir_entry[0]));
+    http (sprintf ('    <atom:title>%V</atom:title>', feed_title));
+    http (sprintf ('    <collection href="%V" >', _host || _dir_entry[0]));
     http (sprintf ('      <atom:title>%V Entries</atom:title>', _dir_entry[0]));
     http (         '      <categories>');
     http (         '        <atom:category term="collection" />');
@@ -6529,8 +6608,10 @@ create function WS.WS.DAV_DIR_LIST (
   else
   {
     _xml := string_output ();
+    if (feed_title is null)
+      feed_title := concat ('Directory Listing of ', full_path);
     http ('<?xml version="1.0" encoding="UTF-8" ?>', _xml);
-    http (sprintf ('<PATH dir_host="%V" dir_name="%V" physical_dir_name="%V">', WS.WS.DAV_HOST (), cast (logical_root_path as varchar), cast (full_path as varchar)), _xml);
+    http (sprintf ('<PATH dir_host="%V" dir_name="%H" physical_dir_name="%V" title="%V">', _host, cast (logical_root_path as varchar), cast (full_path as varchar), feed_title), _xml);
     http ('<DIRS>', _xml);
 
     http ('<SUBDIR modify="" name=".." />\n', _xml);
@@ -6543,25 +6624,26 @@ create function WS.WS.DAV_DIR_LIST (
       _dir_item := _dir [_dir_ctr];
       if (_dir_item[1] = 'C')
       {
+        item_title := DB.DBA.DAV_HIDE_ERROR(DB.DBA.DAV_PROP_GET_INT(aref(_dir_item,4), 'C', 'title', 0));
         _name := rtrim (_dir_item[0], '/');
         _name := subseq (_name, strrchr (_name, '/') + 1);
         if (_user_id <> coalesce (_dir_item[7], -1))
         {
           _user_id := coalesce (_dir_item[7], -1);
-          _user_name := coalesce ((select U_NAME from DB.DBA.SYS_USERS where U_ID = _user_id), '');
+	  _user_name := coalesce (uid_to_user(coalesce (_user_id,-1)), '');
         }
         if (_group_id <> coalesce (_dir_item[6], -1))
         {
           _group_id := coalesce (_dir_item[6], -1);
-          _group_name := coalesce ((select U_NAME from DB.DBA.SYS_USERS where U_ID = _group_id), '');
+	  _group_name :=  coalesce (uid_to_user(coalesce (_group_id,-1)), '');
         }
   	    http (sprintf ('<SUBDIR modify="%s" owner="%s" group="%s" permissions="%s" name="', DB.DBA.DAV_RESPONSE_FORMAT_DATE (_dir_item[3], '', 0), _user_name, _group_name, DB.DBA.DAV_PERM_D2U (_dir_item[5]), _dir_item[9]), _xml );
-  	    http_value (_name, null, _xml );
+        http_escape (_name, 8, _xml, 1, 1);
   	    http ('"', _xml );
         if (feedAction)
           http (sprintf (' pubDate="%s"', DB.DBA.DAV_RESPONSE_FORMAT_DATE (_dir_item[8], '', 1)), _xml);
 
-  	    http (' />\n', _xml );
+	http (sprintf (' title="%V" />\n', coalesce (item_title, _name)), _xml );
   	  }
     }
     http ('</DIRS><FILES>', _xml);
@@ -6577,6 +6659,7 @@ create function WS.WS.DAV_DIR_LIST (
       _dir_item := _dir [_dir_ctr];
       if (_dir_item[1] = 'R')
       {
+        item_title := DB.DBA.DAV_HIDE_ERROR(DB.DBA.DAV_PROP_GET_INT(aref(_dir_item,4), 'R', 'title', 0));
         _name := _dir_item[0];
         _name := subseq (_name, strrchr (_name, '/') + 1);
         if (lower (_name) = '.folder.xsl')
@@ -6593,20 +6676,20 @@ create function WS.WS.DAV_DIR_LIST (
         if (_user_id <> coalesce (_dir_item[7], -1))
         {
           _user_id := coalesce (_dir_item[7], -1);
-          _user_name := coalesce ((select U_NAME from DB.DBA.SYS_USERS where U_ID = _user_id), '');
+	  _user_name := coalesce (uid_to_user(coalesce (_user_id,-1)), '');
         }
         if (_group_id <> coalesce (_dir_item[6], -1))
         {
           _group_id := coalesce (_dir_item[6], -1);
-          _group_name := coalesce ((select U_NAME from DB.DBA.SYS_USERS where U_ID = _group_id), '');
+	  _group_name := coalesce (uid_to_user(coalesce (_group_id,-1)), '');
         }
         http (sprintf ('<FILE modify="%s" owner="%s" group="%s" permissions="%s" mimeType="%s" rs="%i" lenght="%d" hs="%d %s" name="', DB.DBA.DAV_RESPONSE_FORMAT_DATE (_dir_item[3], '', 0), _user_name, _group_name, DB.DBA.DAV_PERM_D2U (_dir_item[5]), _dir_item[9], _res_len, _dir_item[2], flen, aref (fsize, mult)), _xml);
-  	    http_value (_name, null, _xml );
+        http_escape (_name, 8, _xml, 1, 1);
   	    http ('"', _xml );
         if (feedAction)
           http (sprintf (' pubDate="%s"', DB.DBA.DAV_RESPONSE_FORMAT_DATE (_dir_item[8], '', 1)), _xml);
 
-  	    http (' />\n', _xml );
+	http (sprintf (' title="%V" />\n', coalesce (item_title, _name)), _xml );
   	  }
     }
     http ('</FILES></PATH>', _xml);
@@ -6938,6 +7021,9 @@ create procedure DAV_SET_HTTP_REQUEST_STATUS_DESCRIPTION (
   if (rc = -44)
     return 'HTTP/1.1 500 Internal server error';
 
+  if (rc = -46)
+    return 'HTTP/1.1 422 Unprocessable Content';
+
   return 'HTTP/1.1 405 Method Not Allowed';
 }
 ;
@@ -7139,12 +7225,6 @@ create procedure DB.DBA.DAV_SET_HTTP_BODY (
 }
 ;
 
-create procedure DB.DBA.LDP_RDF_TYPES ()
-{
-  return vector ('text/turtle');
-}
-;
-
 create procedure DB.DBA.LDP_ENABLED (
   in _col_id any)
 {
@@ -7166,12 +7246,10 @@ create procedure DB.DBA.LDP_ENABLED (
 }
 ;
 
-create procedure DB.DBA.LDP_CREATE_COL (
-  in path any,
-  in id_parent any := null)
+create procedure DB.DBA.LDP_CREATE_COL (in path any, in id_parent any := null)
 {
-  -- dbg_obj_princ ('LDP_CREATE_COL (', path, ')');
-  declare graph any;
+  #pragma prefix ldp: <http://www.w3.org/ns/ldp#>
+  declare giid any;
 
   -- macOS metadata files
   if (DB.DBA.DAV_MAC_METAFILE (path))
@@ -7183,9 +7261,9 @@ create procedure DB.DBA.LDP_CREATE_COL (
   if (not DB.DBA.LDP_ENABLED (id_parent))
     return;
 
-  graph := WS.WS.DAV_IRI (path);
+  giid := iri_to_id (WS.WS.DAV_IRI (path));
   set_user_id ('dba');
-  TTLP (sprintf ('<%s> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/ldp#Resource>, <http://www.w3.org/ns/ldp#BasicContainer>, <http://www.w3.org/ns/ldp#Container>, <http://www.w3.org/ns/ldp#RDFSource> .', graph), graph, graph);
+  sparql insert into ?:giid { ?:giid a ldp:Resource, ldp:BasicContainer, ldp:Container, ldp:RDFSource . };
   DB.DBA.LDP_CREATE (path, id_parent);
 }
 ;
@@ -7195,23 +7273,25 @@ create procedure DB.DBA.LDP_CREATE_RES (
   in mimeType varchar := null,
   in id_parent any := null)
 {
-  -- dbg_obj_princ ('LDP_CREATE_RES (', path, ')');
-  declare graph, rdfSource varchar;
-
+  #pragma prefix ldp: <http://www.w3.org/ns/ldp#>
+  declare giid any;
   -- macOS metadata files
   if (DB.DBA.DAV_MAC_METAFILE (path))
     return;
-
   if (isnull (id_parent))
     id_parent := DB.DBA.DAV_SEARCH_ID (concat ('/', trim (path, '/'), '/'), 'P');
-
   if (not DB.DBA.LDP_ENABLED (id_parent))
     return;
-
-  graph := WS.WS.DAV_IRI (path);
+  giid := iri_to_id (WS.WS.DAV_IRI (path));
   set_user_id ('dba');
-  rdfSource := case when position (mimeType, DB.DBA.LDP_RDF_TYPES ()) then ', <http://www.w3.org/ns/ldp#RDFSource> ' else '' end;
-  TTLP (sprintf ('<%s> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/ldp#Resource>, <http://www.w3.org/2000/01/rdf-schema#Resource> %s.', graph, rdfSource), graph, graph);
+  if (mimeType in ('text/turtle', 'application/ld+json'))
+    {
+      sparql insert into ?:giid { ?:giid a ldp:Resource, rdfs:Resource, ldp:RDFSource . };
+    }
+  else
+    {
+      sparql insert into ?:giid { ?:giid a ldp:Resource, rdfs:Resource . };
+    }
   DB.DBA.LDP_CREATE (path, id_parent, mimeType);
 }
 ;
@@ -7222,7 +7302,7 @@ create procedure DB.DBA.LDP_CREATE (
   in mimeType varchar := null)
 {
   -- dbg_obj_princ ('LDP_CREATE (', path, ')');
-  declare tmp, path_parent, graph, graph_parent varchar;
+  declare path_parent, graph, graph_parent varchar;
   declare graphIdn, graphParentIdn any;
 
   -- macOS metadata files
@@ -7239,22 +7319,31 @@ create procedure DB.DBA.LDP_CREATE (
     graph := WS.WS.DAV_IRI (path);
     set_user_id ('dba');
 
-    tmp := sprintf (' <%s> <http://www.w3.org/ns/ldp#contains> <%s> .', graph_parent, graph);
     if ((path <> '') and (path[length(path)-1] <> 47))
     {
+      declare str any;
       -- delete old data
-      graphIdn := __i2idn (graph);
-      graphParentIdn := __i2idn (graph_parent);
-      delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = __i2idn ('http://www.w3.org/ns/posix/stat#mtime') and S = graphIdn;
-      delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = __i2idn ('http://www.w3.org/ns/posix/stat#size') and S = graphIdn;
-      for (select DB.DBA.DAV_RES_LENGTH (RES_CONTENT, RES_SIZE) as _size, RES_MOD_TIME as _mod_time from WS.WS.SYS_DAV_RES where RES_FULL_PATH = path) do
-      {
-        tmp := tmp ||
-               sprintf (' <%s> <http://www.w3.org/ns/posix/stat#mtime> %d .', graph, datediff ('second', stringdate ('1970-1-1Z'), adjust_timezone (_mod_time, 0, 1))) ||
-               sprintf (' <%s> <http://www.w3.org/ns/posix/stat#size> %d .', graph, _size);
-      }
+      graphIdn := iri_to_id_nosignal (graph);
+      graphParentIdn := iri_to_id_nosignal (graph_parent);
+      delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = iri_to_id_nosignal ('http://www.w3.org/ns/posix/stat#mtime') and S = graphIdn;
+      delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = iri_to_id_nosignal ('http://www.w3.org/ns/posix/stat#size') and S = graphIdn;
+
+      str := string_output();
+      http ('@prefix ldp: <http://www.w3.org/ns/ldp#> .\n', str);
+      http ('@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n', str);
+      http ('@prefix stat: <http://www.w3.org/ns/posix/stat#> .\n', str);
+      http (sprintf ('<%s> ldp:contains <%s> .\n', graph_parent, graph), str);
+
+      for (select DB.DBA.DAV_RES_LENGTH (RES_CONTENT, RES_SIZE) as _size, RES_MOD_TIME as _mod_time, RES_TYPE as mtype
+          from WS.WS.SYS_DAV_RES where RES_FULL_PATH = path) do
+        {
+          declare tp varchar;
+          tp := sprintf ('http://www.w3.org/ns/iana/media-types/%s#Resource', mtype);
+          http (sprintf ('<%s> a <%s> ; stat:mtime "%s"^^xsd:dateTime ; stat:size %d .\n',
+                graph, tp, date_iso8601 (_mod_time), _size), str);
+        }
+      DB.DBA.TTLP (str, '', graph_parent);
     }
-    DB.DBA.TTLP (tmp, '', graph_parent);
   }
 }
 ;
@@ -7272,24 +7361,20 @@ create procedure DB.DBA.LDP_DELETE (
     return;
 
   graph := WS.WS.DAV_IRI (path);
-  graphIdn := __i2idn (graph);
+  graphIdn := iri_to_id_nosignal (graph);
   graph_parent := WS.WS.DAV_IRI (DB.DBA.DAV_DET_PATH_PARENT (path, 1));
-  graphParentIdn := __i2idn (graph_parent);
+  graphParentIdn := iri_to_id_nosignal (graph_parent);
   if (allData)
-  {
-    SPARQL clear graph ?:graph;
-  }
+    {
+      SPARQL CLEAR GRAPH ?:graph;
+    }
   else
-  {
-    tmpIdn := __i2idn ('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
-    delete from DB.DBA.RDF_QUAD where G = graphIdn and S = graphIdn and P = tmpIdn and O = __i2idn ('http://www.w3.org/ns/ldp#Resource');
-    delete from DB.DBA.RDF_QUAD where G = graphIdn and S = graphIdn and P = tmpIdn and O = __i2idn ('http://www.w3.org/2000/01/rdf-schema#Resource');
-    delete from DB.DBA.RDF_QUAD where G = graphIdn and S = graphIdn and P = tmpIdn and O = __i2idn ('http://www.w3.org/ns/ldp#RDFSource');
-    delete from DB.DBA.RDF_QUAD where G = graphIdn and S = graphIdn and P = tmpIdn and O = __i2idn ('http://www.w3.org/ns/ldp#NonRDFSource');
-  }
-  delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = __i2idn ('http://www.w3.org/ns/ldp#contains') and O = graphIdn;
-  delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = __i2idn ('http://www.w3.org/ns/posix/stat#mtime') and S = graphIdn;
-  delete from DB.DBA.RDF_QUAD where G = graphParentIdn and P = __i2idn ('http://www.w3.org/ns/posix/stat#size') and S = graphIdn;
+   {
+     tmpIdn := iri_to_id_nosignal ('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+     SPARQL define input:storage "" DELETE FROM ?:graphIdn { ?:graphIdn rdf:type ldp:Resource, ldp:RDFSource, ldp:NonRDFSource, rdfs:Resource };
+   }
+  SPARQL define input:storage ""  DELETE FROM ?:graphParentIdn { ?:graphIdn ?p0 ?o0 . ?s1 ?p1 ?:graphIdn . }
+         WHERE { GRAPH ?:graphParentIdn { ?:graphIdn ?p0 ?o0 . ?s1 ?p1 ?:graphIdn . }};
 }
 ;
 
@@ -7366,9 +7451,7 @@ create procedure DB.DBA.LDP_RENAME_GRAPH (
   -- dbg_obj_princ ('LDP_RENAME_GRAPH (', oldGraph, newGraph, ')');
 
   SPARQL clear graph ?:newGraph;
-  update DB.DBA.RDF_QUAD
-     set G = __i2idn (newGraph)
-   where G = __i2idn (oldGraph);
+  update DB.DBA.RDF_QUAD set G = iri_to_id_nosignal (newGraph) where G = iri_to_id_nosignal (oldGraph);
 }
 ;
 
@@ -7400,13 +7483,11 @@ create procedure DB.DBA.LDP_DELETE_GRAPHS (
 }
 ;
 
-create procedure DB.DBA.LDP_REFRESH (
-  in path varchar,
-  in enabled integer := 0)
+create procedure DB.DBA.LDP_REFRESH (in path varchar, in enabled integer := 0)
 {
-  -- dbg_obj_princ ('DB.DBA.LDP_REFRESH (', path, ')');
+  #pragma prefix ldp: <http://www.w3.org/ns/ldp#>
   declare id integer;
-  declare uri, ruri any;
+  declare giid, uri, ruri, aciContent any;
 
   id := DB.DBA.DAV_SEARCH_ID (path, 'C');
   if (isnull (DB.DBA.DAV_HIDE_ERROR (id)))
@@ -7422,26 +7503,33 @@ create procedure DB.DBA.LDP_REFRESH (
   for (select COL_NAME as _COL_NAME, COL_OWNER as _COL_OWNER, COL_GROUP as _COL_GROUP from WS.WS.SYS_DAV_COL where COL_ID = id) do
   {
     uri := WS.WS.DAV_IRI (path);
+      giid := iri_to_id (uri);
     if (enabled)
     {
-      TTLP ('@prefix ldp: <http://www.w3.org/ns/ldp#> .  <> a ldp:BasicContainer, ldp:Container, ldp:RDFSource .', uri, uri);
+          sparql insert into ?:giid { ?:giid a ldp:Resource, ldp:BasicContainer, ldp:Container, ldp:RDFSource . };
     }
     else
     {
       DB.DBA.LDP_DELETE (path, 1);
+          -- restore ACLs
+          aciContent := (select PROP_VALUE from WS.WS.SYS_DAV_PROP where PROP_PARENT_ID = id and PROP_TYPE = 'C' and PROP_NAME = 'virt:aci_meta_n3');
+          if (aciContent is not null)
+            WS.WS.WAC_INSERT (path, aciContent, _COL_OWNER, _COL_GROUP, 1);
     }
     for (select RES_CONTENT, RES_TYPE, RES_FULL_PATH from WS.WS.SYS_DAV_RES where RES_COL = id) do
     {
       if (enabled)
       {
+              declare continue handler for sqlstate '*';
         DB.DBA.LDP_CREATE_RES (RES_FULL_PATH, RES_TYPE);
-        if (position (RES_TYPE, DB.DBA.LDP_RDF_TYPES ()))
-        {
           ruri := WS.WS.DAV_IRI (RES_FULL_PATH);
+              if (RES_TYPE = 'text/turtle')
           {
-            declare continue handler for sqlstate '*';
             TTLP (cast (RES_CONTENT as varchar), ruri, ruri, 255);
           }
+              else if (RES_TYPE = 'application/ld+json')
+                {
+                  DB.DBA.RDF_LOAD_JSON_LD (cast (RES_CONTENT as varchar), ruri, ruri);
         }
       }
       else
@@ -7451,8 +7539,8 @@ create procedure DB.DBA.LDP_REFRESH (
     }
     for (select COL_NAME from WS.WS.SYS_DAV_COL where COL_PARENT = id and COL_DET is null) do
     {
-      ruri := WS.WS.DAV_IRI (path || COL_NAME || '/');
-      TTLP (sprintf ('<%s> <http://www.w3.org/ns/ldp#contains> <%s> .', uri, ruri), uri, uri);
+          ruri := iri_to_id (WS.WS.DAV_IRI (path || COL_NAME || '/'));
+          sparql insert into ?:giid { ?:giid ldp:contains ?:ruri . };
     }
   }
 
@@ -7464,74 +7552,15 @@ create procedure DB.DBA.LDP_REFRESH (
 }
 ;
 
-create procedure DB.DBA.LDP_ACCEPT_PARAM (
-  in accept_full varchar,
-  in accept_mime varchar,
-  in param varchar)
-{
-  declare retValue any;
-  declare arr, arr2, arr3 any;
-  declare i, l, j, k integer;
-
-  retValue := null;
-  arr := split_and_decode (accept_full, 0, '\0\0,');
-  l := length (arr);
-  for (i := 0; i < l; i := i + 1)
-  {
-    arr2 := split_and_decode (trim (arr[i]), 0, '\0\0;');
-    k := length (arr2);
-    if ((k > 0) or (accept_mime = trim (arr2[0])))
-    {
-      for (j := 1; j < k; j := j + 1)
-      {
-        arr3 := split_and_decode (trim (arr2[j]), 0, '\0\0=');
-        if ((length (arr3) = 2) and (param = trim (arr3[0])))
-        {
-          retValue := trim (arr3[1]);
-          goto _break;
-        }
-      }
-      goto _break;
-    }
-  }
-_break:;
-  return retValue;
-}
-;
-
 create procedure DB.DBA.DAV_HREF_URL (
   in href varchar)
 {
-  --href := replace (href, ' ', '%20');
-
-  -- return charset_recode (href, 'UTF-8', '_WIDE_');
-
-  -- declare ss any;
-  --
-  -- ss := string_output ();
-  -- http_dav_url (charset_recode (href, 'UTF-8', '_WIDE_'), null, ss);
-  --
-  -- return string_output_string (ss);
-  declare delimiter char;
-  declare ss, parts any;
-
-  ss := string_output ();
-  parts := split_and_decode (href, 0, '\0\0/');
-  delimiter := '';
-  foreach (any part in parts) do
-  {
-    if (part = '')
-    {
-      http ('/', ss);
-    }
-    else
-    {
-      http (delimiter, ss);
-      http_url (charset_recode (part, 'UTF-8', '_WIDE_'), null, ss);
-      delimiter := '/';
-    }
-  }
-  return string_output_string (ss);
+  declare ses any;
+  ses := string_output ();
+  if (isstring (href))
+    __box_flags_set (href, 2);
+  http_dav_url (href, null, ses);
+  return string_output_string (ses);
 }
 ;
 
@@ -7556,5 +7585,15 @@ create procedure DB.DBA.DAV_RESPONSE_FORMAT_DATE (
     dt := dt_set_tz  (dateadd ('minute', -tz, dt), tz);
   }
   return soap_print_box (dt, enclosing_tag, date_encoding_type);
+}
+;
+
+create procedure DB.DBA.DAV_CONTENT_TYPE (
+  in ct varchar)
+{
+  if (ct like 'text/%')
+     return sprintf ('Content-Type: %s; charset="%s"\r\n', ct, 'UTF-8');
+
+  return sprintf ('Content-Type: %s\r\n', ct);
 }
 ;

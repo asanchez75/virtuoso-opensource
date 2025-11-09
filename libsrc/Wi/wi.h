@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -121,9 +121,6 @@ typedef struct ext_ref_s ext_ref_t;
 #include "col.h"
 #include "vec.h"
 
-
-#define IT_DP_MAP(it, dp) \
-  (&(it)->it_maps[(dp) & IT_N_MAPS_MASK])
 
 extern int it_n_maps;
 #define IT_N_MAPS it_n_maps
@@ -511,7 +508,7 @@ struct hash_index_s
   chash_t *		hi_chash;
   uint64		hi_cl_id; /* if cluster hash join temp, id for reference */
   dk_hash_t *	hi_thread_cha; /* when filling hash join chash, maps from thread to cha */
-  int			hi_size;
+  uint32		hi_size;
   char			hi_is_unique;
   int64			hi_count;
 #ifdef OLD_HASH
@@ -573,7 +570,7 @@ struct index_tree_s
     dk_set_t 		it_waiting_hi_fill; /* if thi is a hash inx being filled, list of threads waiting for the fill to finish */
     index_tree_t *	it_hic_next; /* links for LRU queue of hash indices */
     index_tree_t *	it_hic_prev;
-    long		it_last_used;
+    time_msec_t		it_last_used;
     int			it_hi_reuses; /* if hash inx, count of reuses */
     bitf_t		it_all_in_own_em:1;
     bitf_t		it_blobs_with_index:1;
@@ -762,7 +759,7 @@ typedef struct out_map_s
   char			itc_lock_mode; \
   short			itc_map_pos; \
   row_no_t		itc_col_row; \
-  volatile dp_addr_t		itc_page; \
+  volatile dp_addr_t	itc_page; \
   dp_addr_t		itc_owns_page;  /* cache last owned lock */ \
   buffer_desc_t *	itc_buf_registered; \
   it_cursor_t *		itc_next_on_page; \
@@ -1302,6 +1299,13 @@ len = row_length (row, key)
   itc->itc_itm1 = NULL; \
 }
 
+#define ITC_LEAVE_MAP_NC_IF_NOT_THERE_ALREADY(itc,itm1_mtx_entered_here) \
+{ \
+  mtx_assert (itc->itc_itm1 && !itc->itc_itm2); \
+  if (itm1_mtx_entered_here) \
+    mutex_leave (&itc->itc_itm1->itm_mtx); \
+  itc->itc_itm1 = NULL; \
+}
 
 #define ASSERT_IN_MAP(it, dp) \
 {\
@@ -1352,9 +1356,6 @@ len = row_length (row, key)
 }\
 
 
-
-
-
 #define ITC_IN_KNOWN_MAP(itc, dp)\
 {\
   it_map_t * itm = IT_DP_MAP (itc->itc_tree, dp);\
@@ -1365,6 +1366,23 @@ len = row_length (row, key)
   itc->itc_itm1 = itm;\
 }
 
+#define ITC_IN_KNOWN_MAP_IF_NOT_THERE_ALREADY(itc, dp, it_map_mtx, itm1_mtx_entered_here)\
+{\
+  it_map_t * itm = IT_DP_MAP (itc->itc_tree, dp);\
+  mtx_assert (!itc->itc_itm2); \
+  mtx_assert (!itc->itc_itm1 || itc->itc_itm1 == itm);	\
+  if (!itc->itc_itm1) \
+    { \
+      if (&(itm->itm_mtx) != it_map_mtx) \
+        { \
+          mutex_enter (&itm->itm_mtx);\
+          itm1_mtx_entered_here = 1; \
+        } \
+      else \
+        itm1_mtx_entered_here = 0; \
+    } \
+  itc->itc_itm1 = itm; \
+}
 
 #define ITC_IN_OWN_MAP(itc) ITC_IN_KNOWN_MAP ((itc), (itc)->itc_page)
 
@@ -1505,18 +1523,20 @@ struct buffer_desc_s
   io_queue_t *	 bd_iq; /* iq, if buffer in queue for read(write */
   buffer_desc_t *	bd_iq_prev; /* next and prev in double linked list of io queue */
   buffer_desc_t *	bd_iq_next;
-#if defined (PAGE_DEBUG) | defined (MTX_DEBUG)
+#if defined (PAGE_DEBUG) | defined (MTX_DEBUG) | defined(BUF_FLAGS_DEBUG)
   du_thread_t *	bd_writer; /* for debugging, the thread which has write access, if any */
   char * 		bd_enter_file;
   char * 		bd_leave_file;
-  short 			bd_enter_line;
-  short 			bd_leave_line;
-  short                  bd_set_wr_line;
-  short		bd_delta_line;
+  short 	        bd_enter_line;
+  short 		bd_leave_line;
+  short                 bd_set_wr_line;
+  short		        bd_delta_line;
   char 			bd_el_flag;	/* what operation was last: 1-enter, 2-leave */
-  int		bd_ck_ts;
-  int		bd_delta_ts;
+  bp_ts_t	        bd_ck_ts;
+  bp_ts_t		bd_delta_ts;
   char *                bd_set_wr_file;
+  char *                bd_set_dirty_file;
+  short                 bd_set_dirty_line;
   thread_t *		bd_thr_el;
 #endif
 #ifdef PAGE_TRACE
@@ -1606,7 +1626,7 @@ struct buffer_desc_s
 #define BUF_NONE_WAITING(buf) \
 (!buf->bd_write_waiting && !buf->bd_read_waiting && !buf->bd_being_read)
 
-#if defined (PAGE_DEBUG) | defined (MTX_DEBUG)
+#if defined (PAGE_DEBUG) | defined (MTX_DEBUG) | defined(BUF_FLAGS_DEBUG)
 #define BD_SET_IS_WRITE(bd, f) \
 do { \
   (bd)->bd_is_write = f;			    \
@@ -1952,7 +1972,7 @@ extern int64 bdf_is_avail_mask; /* all bits on except read aside flag which does
   || DV_INT64 == dtp)
 
 #define IS_DATE_DTP(dtp) \
-  (DV_TIMESTAMP == (dtp) || DV_DATE == (dtp) || DV_DATETIME == (dtp))
+  (DV_DATE == (dtp) || DV_TIME == (dtp) || DV_DATETIME == (dtp) || DV_TIMESTAMP == (dtp))
 
 #ifndef dbg_printf
 # ifdef DEBUG
@@ -2071,11 +2091,11 @@ extern int64 bdf_is_avail_mask; /* all bits on except read aside flag which does
       CHECK_DK_MEM_RESERVE (__lt); \
       CHECK_SESSION_DEAD (__lt, it, buf);		   \
       if ((__lt && __lt->lt_status != LT_PENDING)  \
-|| (wi_inst.wi_is_checkpoint_pending && cpt_is_global_lock (__lt))) \
+          || (wi_inst.wi_is_checkpoint_pending && cpt_is_global_lock (__lt))) \
 	{ \
 	  if (__lt && !wi_inst.wi_checkpoint_atomic) \
 	itc_bust_this_trx (it, buf, may_ret); \
-}\
+        }\
  }								\
 
 #define LT_NEED_WAIT_CPT(lt) \
@@ -2154,6 +2174,7 @@ extern int assertion_on_read_fail;
 
 extern char *run_as_os_uname;
 extern long dbe_auto_sql_stats; /* from search.c */
+extern char *rdf_label_inf_name;
 
 extern int in_crash_dump;
 
@@ -2168,22 +2189,34 @@ extern int in_crash_dump;
 #define __builtin_prefetch(m) 0
 #endif
 
-#define SD_INT32 ((char **)-1)
-#define SD_INT64 ((char **)-2)
+typedef enum
+{
+  SD_TYPE_INT32,
+  SD_TYPE_INT64,
+  SD_TYPE_LONG,
+  SD_TYPE_STRING,
+} stat_desc_type_t;
 
 typedef struct stat_desc_s
   {
     const char *   sd_name;
-    long *   sd_value;
-    char **   sd_str_value;
+  void *sd_value;
+  stat_desc_type_t sd_type;
   } stat_desc_t;
 
 extern stat_desc_t dbf_descs[];
 extern stat_desc_t rdf_preset_datatypes_descs[];
 
+#define SD_STRUCT_ITEM(a, b, c) { a, &b, c }
+
+#define SD_DEF_I32(v, a)	SD_STRUCT_ITEM (a, v, SD_TYPE_INT32)
+#define SD_DEF_I64(v, a)	SD_STRUCT_ITEM (a, v, SD_TYPE_INT64)
+#define SD_DEF_L(v, a)		SD_STRUCT_ITEM (a, v, SD_TYPE_LONG)
+#define SD_DEF_STR(v, a)	SD_STRUCT_ITEM (a, v, SD_TYPE_STRING)
+
 typedef struct s_time_t
 {
-  uint32	sti_real;
+  time_msec_t	sti_real;
   uint32	sti_cpu;
   uint32	sti_sys;
 } sys_timer_t;

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -34,7 +34,7 @@
 #endif
 
 #ifdef PAGE_TRACE
-int page_trace_on = 1;
+int page_trace_on = 0;
 #endif
 
 
@@ -171,7 +171,7 @@ itc_delta_this_buffer (it_cursor_t * itc, buffer_desc_t * buf, int stay_in_map)
 #endif
   if (gethash (DP_ADDR2VOID (buf->bd_page), &itm->itm_remap))
     {
-      buf->bd_is_dirty = 1;
+      BUF_SET_IS_DIRTY(buf,1);
       return (buf);
     }
   if (it_can_reuse_logical (itc->itc_tree, buf->bd_page))
@@ -197,9 +197,8 @@ itc_delta_this_buffer (it_cursor_t * itc, buffer_desc_t * buf, int stay_in_map)
     }
 
   buf->bd_physical_page = remap_to;
-  sethash (DP_ADDR2VOID (buf->bd_page), &itm->itm_remap,
-	   DP_ADDR2VOID (remap_to));
-  buf->bd_is_dirty = 1;
+  sethash (DP_ADDR2VOID (buf->bd_page), &itm->itm_remap, DP_ADDR2VOID (remap_to));
+  BUF_SET_IS_DIRTY(buf,1);
   DBG_PT_DELTA_CLEAN (buf, old_dp);
   return buf;
 }
@@ -235,7 +234,7 @@ it_new_page (index_tree_t * it, dp_addr_t addr, int type, oid_t col_id,
   if (!physical_dp)
     {
       log_error ("Out of disk space for database");
-      if (DPF_INDEX == type)
+	  if (DPF_INDEX == type && DBS_TEMP != em->em_dbs->dbs_type)
 	{
 	  /* a split must never fail to get a page.  Use the remap hold as a backup */
 	  physical_dp = em_new_dp (it->it_extent_map, EXT_REMAP, 0, &has_hold->itc_n_pages_on_hold);
@@ -494,12 +493,12 @@ dp_info (dbe_storage_t * dbs, dp_addr_t dp)
 	}
       END_DO_HT;
     }
-  em = (extent_map_t *)gethash (EXT_ROUND (dp), dbs->dbs_dp_to_extent_map);
+  em = (extent_map_t *)gethash ((void*)(ptrlong)EXT_ROUND (dp), dbs->dbs_dp_to_extent_map);
   if (em)
     {
       int is_free  = dbs_is_free_page (dbs, dp);
       printf ("%s: ", is_free ? "free" : "allocated");
-      ext = (extent_t*)gethash (EXT_ROUND (dp), em->em_dp_to_ext);
+      ext = (extent_t*)gethash ((void*)(ptrlong)EXT_ROUND (dp), em->em_dp_to_ext);
       if (ext)
 	printf ("extent map %s %p, extent %p\n", em->em_name, em, ext);
       else

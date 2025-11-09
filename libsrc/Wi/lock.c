@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1466,7 +1466,7 @@ int
 lock_wait (gen_lock_t * pl, it_cursor_t * it, buffer_desc_t * buf,
 	   int acquire)
 {
-  long time;
+  time_msec_t time;
   lock_trx_t * lt = it->itc_ltrx;
   ITC_LEAVE_MAPS (it);
   it->itc_acquire_lock = acquire;
@@ -2108,7 +2108,9 @@ pl_page_deleted (page_lock_t * pl, buffer_desc_t * buf)
     buf->bd_pl = NULL;
 }
 
+#ifdef DEBUG
 void ltbing2 () {}
+#endif
 
 void
 gl_print (gen_lock_t * gl)
@@ -2212,86 +2214,59 @@ unsigned long main_continuation_reason = 0; /* 0 - checkpoint; 1 - scheduler */
 
 dk_mutex_t *time_mtx;
 
-unsigned long checkpointed_last_time = 0;
-
-#ifdef linux
-#include <sys/sysinfo.h>
-#endif
-/*
-#ifdef __APPLE__
-#include <mach/task.h>
-#include <mach/mach_init.h>
-#endif
-*/
-#ifdef WIN32
-#include <windows.h>
-#include <psapi.h>
-#else
-#include <sys/resource.h>
-#endif
-
-size_t
-memory_used ()
-{
-#if defined (linux)
-    size_t size = 0;
-    FILE *file = fopen("/proc/self/statm", "r");
-    if (file)
-      {
-	unsigned long vm = 0;
-	fscanf (file, "%lu", &vm);
-	fclose (file);
-	size = (size_t) vm * getpagesize();
-      }
-    return size;
-/*
-#elif defined (__APPLE__)
-    size_t size = 0;
-    struct task_basic_info t_info;
-    mach_msg_type_number_t t_info_count = TASK_BASIC_INFO_COUNT;
-    task_info(current_task(), TASK_BASIC_INFO, (task_info_t)&t_info, &t_info_count);
-    size = t_info.virtual_size;
-    return size;
-*/
-#elif defined (WIN32)
-    PROCESS_MEMORY_COUNTERS count;
-    if (GetProcessMemoryInfo (GetCurrentProcess(), &count, sizeof (count)))
-      return count.PagefileUsage;
-    return 0;
-#else
-    return 0;
-#endif
-}
+time_msec_t checkpointed_last_time = 0;
 
 #ifdef HAVE_GETRUSAGE
 #include <sys/resource.h>
 #endif
 
-int last_majflt = 0;
+long swap_guard_last_majflt = 0;
+long swap_guard_threshold = 300;
 int32 swap_guard_on = 0;
 int process_is_swapping = 0;
-size_t max_vsize = 0;
+
+int64  max_proc_vm_size = 0; /* vm mem cap in Kb */
+int64 vm_size_wd_threshold = 0; /* threshold to trigger www back on */
+int www_stopped_by_wd = 0; /* separate wd flag indicating www is stopped via vm wd */
+extern int64 curr_vm_size;
+
+extern int www_maintenance;
+void http_kill_all ();
 
 void
-the_grim_swap_guard ()
+the_grim_mem_guard (void)
 {
+  if (max_proc_vm_size > 0 && max_proc_vm_size < curr_vm_size) 
+    {   /* don't check if already stopped, kill ws cli until enough free ram, see below */
+      if (!www_stopped_by_wd) /*do not repeat same message, but kill any ws cli if stil alive */
+        log_error ("The process Vm size %lld went above the limit %lld, stopping www", curr_vm_size, max_proc_vm_size);
+      www_stopped_by_wd = www_maintenance = 1;
+      http_kill_all ();
+    }
+  if (www_stopped_by_wd && max_proc_vm_size > (curr_vm_size + vm_size_wd_threshold))
+    {
+      www_stopped_by_wd = www_maintenance = 0;
+      log_info ("The Vm size %lld went below limit, enabled www", curr_vm_size);
+    }
 #ifdef HAVE_GETRUSAGE
   struct rusage ru;
   if (!swap_guard_on)
     return;
+  if (swap_guard_threshold < 300)
+    swap_guard_threshold = 300;
   if (wi_inst.wi_is_checkpoint_pending)
   return;
   getrusage (RUSAGE_SELF, &ru);
 #ifdef GPF_ON_SWAPPING
-  if (ru.ru_majflt - last_majflt > 300)
+  if (ru.ru_majflt - swap_guard_last_majflt > swap_guard_threshold)
     GPF_T1 ("started swapping");
 #endif
   if (swap_guard_on & 0x10)
     {
-      if ((ru.ru_majflt - last_majflt > 300) && !wi_inst.wi_is_checkpoint_pending)
+      if ((ru.ru_majflt - swap_guard_last_majflt > swap_guard_threshold) && !wi_inst.wi_is_checkpoint_pending)
         GPF_T1 ("The process started swapping and SwapGuard parameter has bit 0x10 set on, forcing immediate kill. ");
     }
-  if (virtuoso_server_initialized && ru.ru_majflt - last_majflt > 300)
+  if (virtuoso_server_initialized && ru.ru_majflt - swap_guard_last_majflt > swap_guard_threshold)
     {
       if (!process_is_swapping)
 	log_error ("The process started swapping, all pending transactions will be killed");
@@ -2301,27 +2276,22 @@ the_grim_swap_guard ()
     {
       if (process_is_swapping)
 	process_is_swapping = 0;
-  last_majflt = ru.ru_majflt;
+      swap_guard_last_majflt = ru.ru_majflt;
     }
 #endif
-  if (max_vsize > 0 && memory_used () > max_vsize)
-    {
-      log_error ("The process VM size went above the limit");
-      max_vsize = 0;
-    }
 }
 
 
 unsigned long cfg_resources_clear_interval = 0;
-extern uint32 cl_last_wait_query;
+extern time_msec_t cl_last_wait_query;
 
-uint32 prev_reaper_time;
+time_msec_t prev_reaper_time;
 char srv_approx_dt[DT_LENGTH];
 
 void
-clear_old_root_images ()
+clear_old_root_images (void)
 {
-  long now = approx_msec_real_time ();
+  time_msec_t now = approx_msec_real_time ();
   mutex_enter (old_roots_mtx);
   {
     buffer_desc_t ** prev = &old_root_images;
@@ -2347,10 +2317,10 @@ void
 the_grim_lock_reaper (void)
 {
   static int auto_f_count = 0;
-  static unsigned long schedule_last_time = 0;
-  static unsigned long thread_clear_last_time = 0;
-  static unsigned long resources_clear_last_time = 0;
-  long now = approx_msec_real_time ();
+  static time_msec_t schedule_last_time = 0;
+  static time_msec_t thread_clear_last_time = 0;
+  static time_msec_t resources_clear_last_time = 0;
+  time_msec_t now = approx_msec_real_time ();
   int server_is_idle = 1;
   int n_threads = 0, n_vdb_threads = 0, n_lw_threads = 0;
   dt_init ();
@@ -2365,7 +2335,7 @@ the_grim_lock_reaper (void)
       /*printf ("lti = %d \n", now - prev_reaper_time);*/
     }
   prev_reaper_time = now;
-  the_grim_swap_guard ();
+  the_grim_mem_guard ();
  kill_next_txn:
   IN_TXN;
   DO_SET (lock_trx_t *, lt, &all_trxs)
@@ -2396,7 +2366,7 @@ the_grim_lock_reaper (void)
 	{
 	  cli->cli_terminate_requested = CLI_RESULT;
 	  cli->cli_activity.da_anytime_result = 1;
-	  at_printf (("host %d set anytime flag after %ld\n", local_cll.cll_this_host, now - cli->cli_anytime_started));
+	  at_printf (("host %d set anytime flag after %ld\n", local_cll.cll_this_host, (long) (now - cli->cli_anytime_started)));
 	}
     }
   END_DO_SET ();
@@ -2428,28 +2398,35 @@ the_grim_lock_reaper (void)
       mt_write_start (auto_f_count % 10 ? OLD_DIRTY : ALL_DIRTY);
     }
 
-
   failed_login_purge ();
 
   if (cfg_autocheckpoint > 0)	/* Autocheckpointing wanted? */
     {
       if (0 != checkpointed_last_time)	/* Not the first time here? */
 	{
-	  if (main_thread_ready && (((unsigned long int) now) - checkpointed_last_time)
-	      >= cfg_autocheckpoint)
+	  if (main_thread_ready &&
+              (now - checkpointed_last_time) >= cfg_autocheckpoint)
 	    {
-	      /* Okay do it. I.e. let the loop in main in chil.c to do it. */
-	      main_continuation_reason = MAIN_CONTINUE_ON_CHECKPOINT;
-	      checkpointed_last_time = (unsigned long int) now;
-	      main_thread_ready = 0;
-	      semaphore_leave (background_sem);
+              if (!c_soft_checkpoint || server_is_idle)
+		{
+		  /* Okay do it. I.e. let the loop in main in chil.c to do it. */
+		  main_continuation_reason = MAIN_CONTINUE_ON_CHECKPOINT;
+		  checkpointed_last_time = now;
+		  main_thread_ready = 0;
+		  semaphore_leave (background_sem);
+		}
+              else
+                {
+                  if (mon_log_error_event (EES_CPT, checkpointed_last_time, "The same error has been reported too many times, log of it stopped", 5, 0))
+                    log_info ("Checkpoint postponed until process is idle");
+                }
 	    }
 	}
       else
 	/* First time here. Do it the next time, because we want to
 	   give initialization routines some time to do their job. */
 	{
-	  checkpointed_last_time = (unsigned long int) now;
+	  checkpointed_last_time = now;
 	}
     }
 
@@ -2457,18 +2434,17 @@ the_grim_lock_reaper (void)
     {
       if (0 != schedule_last_time)
 	{
-	  if (main_thread_ready && (((unsigned long int)now) - schedule_last_time)
-	      >= cfg_scheduler_period)
+	  if (main_thread_ready && (now - schedule_last_time) >= cfg_scheduler_period)
 	    {
 	      main_continuation_reason = MAIN_CONTINUE_ON_SCHEDULER;
-	      schedule_last_time = (unsigned long int) now;
+	      schedule_last_time = now;
 	      main_thread_ready = 0;
 	      semaphore_leave (background_sem);
 	    }
 	}
       else
 	{
-	  schedule_last_time = (unsigned long int) now;
+	  schedule_last_time = now;
 	}
     }
   clear_old_root_images ();
@@ -2477,7 +2453,7 @@ the_grim_lock_reaper (void)
     {
       if (0 != thread_clear_last_time)
 	{
-	  if ((((unsigned long int)now) - thread_clear_last_time) >= cfg_thread_live_period)
+	  if ((now - thread_clear_last_time) >= cfg_thread_live_period)
 	    {
 	      int thread_killed = thread_release_dead_threads (cfg_thread_threshold);
 	      if (DO_LOG(LOG_THR) && thread_killed)
@@ -2487,14 +2463,14 @@ the_grim_lock_reaper (void)
 	}
       else
 	{
-	  thread_clear_last_time = (unsigned long int) now;
+	  thread_clear_last_time = now;
 	}
     }
   if (cfg_resources_clear_interval)
     {
       if (0 != resources_clear_last_time)
 	{
-	  if ((((unsigned long int)now) - resources_clear_last_time) >= cfg_resources_clear_interval)
+	  if ((now - resources_clear_last_time) >= cfg_resources_clear_interval)
 	    {
 	      resources_reaper ();
 	      resources_clear_last_time = now;
@@ -2502,7 +2478,7 @@ the_grim_lock_reaper (void)
 	}
       else
 	{
-	  resources_clear_last_time = (unsigned long int) now;
+	  resources_clear_last_time = now;
 	}
     }
   DO_SET (dbe_storage_t *, dbs, &wi_inst.wi_storage)
@@ -2548,7 +2524,7 @@ lt_timestamp_box (lock_trx_t * lt)
 }
 
 void
-dbg_flush ()
+dbg_flush (void)
 {
   fflush (stdout);
   fflush (stderr);
@@ -2561,7 +2537,7 @@ int ltbing (int s)
 
 #ifdef MALLOC_DEBUG
 #undef lt_start
-lock_trx_t * lt_start ()
+lock_trx_t * lt_start (void)
 {
   return dbg_lt_start (__FILE__, __LINE__);
 }

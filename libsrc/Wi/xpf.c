@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -4657,7 +4657,7 @@ bif_xpf_extension (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 	      "Please check, delete the row and restart the server");
 	  return box_num (1);
 	}
-      if (DV_TYPE_OF (pname) != DV_SHORT_STRING && DV_TYPE_OF (f) != DV_LONG_STRING)
+      if (DV_TYPE_OF (pname) != DV_SHORT_STRING && DV_TYPE_OF (pname) != DV_LONG_STRING)
 	{
 	  log_error ("There's a row in DB.DBA.SYS_XPF_EXTENSION that has invalid XPE_PNAME. "
 	      "Please check, delete the row and restart the server");

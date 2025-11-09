@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -3115,7 +3115,7 @@ bif_xslt (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   caddr_t err = NULL;
   caddr_t res;
   xml_tree_ent_t *res1;
-  long start = prof_on ? get_msec_real_time () : 0;
+  time_msec_t start = prof_on ? get_msec_real_time () : 0;
   caddr_t name = bif_string_arg (qst, args, 0, "xslt");
   xml_entity_t * xe = bif_entity_arg (qst, args, 1, "xslt");
   xslt_sheet_t * xsh = xslt_sheet ((query_instance_t *) qst, NULL, name, NULL, NULL);
@@ -3157,7 +3157,7 @@ bif_xslt (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   dk_free_box ((caddr_t) xe);
 #endif
   if (prof_on && start)
-    prof_exec (NULL, name, get_msec_real_time () - start, PROF_EXEC);
+    prof_exec (NULL, name, (long) (get_msec_real_time () - start), PROF_EXEC);
   return (caddr_t)(res1);
 }
 
@@ -3556,7 +3556,7 @@ bif_dict_duplicate (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   id_hash_iterator_t *orig_hit = bif_dict_iterator_arg (qst, args, 0, "dict_duplicate", 0);
   id_hash_t *new_ht = (id_hash_t *)box_dict_hashtable_copy_hook ((caddr_t)(orig_hit->hit_hash));
   id_hash_iterator_t *new_hit = (id_hash_iterator_t *)box_dv_dict_iterator ((caddr_t)new_ht);
-#ifndef NDEBUG
+#ifdef DEBUG
   printf ("Dict duplicate: from %p to %p\n", orig_hit->hit_hash, new_ht);
 #endif
   return (caddr_t)new_hit;
@@ -3650,6 +3650,12 @@ dict_put_impl (id_hash_iterator_t *hit, caddr_t key, caddr_t val, int signal_uns
 skip_insertion:
   HT_UNLOCK_COND(ht,wrlocked);
   res = ht->ht_inserts - ht->ht_deletes;
+  if (signal_unsafe_args && ht->ht_dict_max_mem_in_use > 0
+      && ht->ht_mp != NULL && ((mem_pool_t *)ht->ht_mp)->mp_bytes > ht->ht_dict_max_mem_in_use)
+    sqlr_new_error ("42000", "D1CT0", "Hash dictionary memory pool is full, %ld exceeded %ld bytes",
+        ((mem_pool_t *)ht->ht_mp)->mp_bytes, ht->ht_dict_max_mem_in_use);
+  if (signal_unsafe_args && (0 < ht->ht_dict_max_entries) && ((ht->ht_inserts - ht->ht_deletes) > ht->ht_dict_max_entries))
+    sqlr_new_error ("42000", "D1CTX", "Hash dictionary is full, exceeded %ld entries", ht->ht_dict_max_entries);
   return box_num (res);
 }
 
@@ -4702,7 +4708,7 @@ bif_gvector_deduplicate_sorted (caddr_t * qst, caddr_t * err_ret, state_slot_t *
 caddr_t
 bif_rowvector_sort_imp (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args, const char *funname, char algo, int block_elts, int key_ofs, int sort_asc)
 {
-  caddr_t *vect = (caddr_t *)bif_array_arg (qst, args, 0, funname);
+  caddr_t *vect = (caddr_t *)bif_array_of_pointer_arg (qst, args, 0, funname);
   int vect_elems = BOX_ELEMENTS (vect);
   int key_item_inx = bif_long_range_arg (qst, args, 1, funname, 0, 1024);
   int group_count;
@@ -5323,7 +5329,7 @@ xslt_init (void)
 
   bif_define ("dict_new", bif_dict_new);
   bif_define ("dict_duplicate", bif_dict_duplicate);
-  bif_define ("dict_put", bif_dict_put);
+  bif_define_ex ("dict_put", bif_dict_put,  BMD_RET_TYPE, &bt_integer, BMD_NO_CLUSTER, BMD_DONE);
   bif_define ("dict_get", bif_dict_get);
   bif_define_ex ("dict_contains_key", bif_dict_contains_key, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define ("dict_remove", bif_dict_remove);

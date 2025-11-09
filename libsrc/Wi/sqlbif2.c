@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -43,6 +43,7 @@
 #include "srvmultibyte.h"
 #include "xmlparser.h"
 #include "xmltree.h"
+#include "monitor.h"
 
 #ifdef HAVE_PWD_H
 #include <pwd.h>
@@ -279,7 +280,7 @@ tcpses_check_disk_error (dk_session_t *ses, caddr_t *qst, int throw_error)
 {
   query_instance_t *qi = (query_instance_t *) qst;
 
-  if (!ses || !ses->dks_session || !ses->dks_session->ses_class != SESCLASS_STRING
+  if (!ses || !ses->dks_session || ses->dks_session->ses_class != SESCLASS_STRING
       || !ses->dks_session->ses_file->ses_max_blocks_init)
     return 0;
 
@@ -557,7 +558,7 @@ srv_calculate_sqlo_unit_msec (char* stmt)
   caddr_t score_box;
   float score;
   int save_qp = enable_qp;
-  float start_time, end_time;
+  time_msec_t start_time, end_time;
   local_cursor_t *lc_tim = NULL;
   query_t *qr = NULL;
   dbe_table_t *sys_cols_tb = sch_name_to_table (isp_schema (NULL), "DB.DBA.SYS_COLS");
@@ -574,7 +575,7 @@ srv_calculate_sqlo_unit_msec (char* stmt)
       stmt = COL_COUNT;
     }
   qr = sql_compile (stmt, cli, &err, SQLC_DEFAULT);
-  start_time = (float) get_msec_real_time ();
+  start_time = get_msec_real_time ();
   enable_qp = 1;
   for (inx = 0; inx < SQLO_NITERS; inx++)
     { /* repeat enough times as sys_cols is usually not very big */
@@ -589,7 +590,7 @@ srv_calculate_sqlo_unit_msec (char* stmt)
           break;
         }
     }
-  end_time = (float) get_msec_real_time ();
+  end_time = get_msec_real_time ();
   enable_qp = save_qp;
   qr_free (qr);
 
@@ -597,7 +598,7 @@ srv_calculate_sqlo_unit_msec (char* stmt)
   score = unbox_float (score_box);
   /*printf ("cu score = %f\n", score);*/
   dk_free_tree (score_box);
-  compiler_unit_msecs = (end_time - start_time) / (score * inx);
+  compiler_unit_msecs = (float)(end_time - start_time) / (score * inx);
   if (deflt_stmt && enable_vec_cost)
     compiler_unit_msecs /= 4.339062;
   sys_cols_tb->tb_count = old_tb_count;
@@ -658,7 +659,7 @@ bif_client_attr (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
 
   if (!stricmp ("client_protocol", mode))
     {
-      if (qi->qi_client->cli_ws && qi->qi_client->cli_ws->ws_proto)
+      if (qi->qi_client->cli_ws)
 	return box_dv_short_string (qi->qi_client->cli_ws->ws_proto);
       else
 	return box_dv_short_string ("SQL");
@@ -718,44 +719,7 @@ bif_client_attr (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
     {
 #ifdef _SSL
       caddr_t ret = NULL;
-      char *ptr;
-      SSL *ssl = NULL;
-      X509 *cert = NULL;
-      BIO *in = NULL;
-      session_t * ses = (qi->qi_client->cli_ws ?
-	  qi->qi_client->cli_ws->ws_session->dks_session : (qi->qi_client->cli_session ?
-	  qi->qi_client->cli_session->dks_session : NULL));
-
-      if (ses)
-	ssl = (SSL *) tcpses_get_ssl (ses);
-
-      if (ssl)
-        cert = SSL_get_peer_certificate (ssl);
-      else
-	return NULL;
-
-      if (!cert)
-	return NULL;
-
-      in = BIO_new (BIO_s_mem());
-
-      if (!in)
-	{
-	  char err_buf[512];
-	  sqlr_new_error ("22005", "SR402", "Cannot allocate temp space. SSL error : %s",
-	      get_ssl_error_text (err_buf, sizeof (err_buf)));
-	  return NULL;
-	}
-
-      BIO_reset(in);
-
-      PEM_write_bio_X509 (in, cert);
-      ret = dk_alloc_box (BIO_get_mem_data (in, &ptr) + 1, DV_SHORT_STRING);
-      memcpy (ret, ptr, box_length (ret) - 1);
-      ret[box_length (ret) - 1] = 0;
-
-      BIO_free (in);
-
+      ret = get_client_pem_certificate (qst, err_ret);
       return ret;
 #else
       sqlr_new_error ("22005", "SR403", "'client_certificate' value of client_attr option is not supported by this build of the Virtuoso server");
@@ -1750,6 +1714,21 @@ bif_this_server (caddr_t * qst, caddr_t * err_ret, state_slot_t ** args)
   return NEW_DB_NULL;
 }
 
+caddr_t
+bif_log_error_event (caddr_t *qst, caddr_t *err_ret, state_slot_t **args)
+{
+  static char *me = "__log_error_event";
+  long sid = bif_long_range_arg (qst, args, 0, me, 0, 0xffff);
+  long eid = bif_long_arg (qst, args, 1, me);
+  caddr_t err = bif_string_arg (qst, args, 2, me);
+  long max = bif_long_arg (qst, args, 3, me);
+  long critical = bif_long_arg (qst, args, 4, me);
+  int rc = mon_log_error_event (sid, eid, err, max, critical);
+  if (rc)
+    log_error (err);
+  return box_num (rc);
+}
+
 void
 sqlbif2_init (void)
 {
@@ -1771,7 +1750,7 @@ sqlbif2_init (void)
   bif_define_ex ("query_instance_id", bif_query_instance_id, BMD_RET_TYPE, &bt_integer, BMD_DONE);
   bif_define ("sql_warning", bif_sql_warning);
   bif_define ("sql_warnings_resignal", bif_sql_warnings_resignal);
-  bif_define_ex ("__sec_uid_to_user", bif_sec_uid_to_user, BMD_RET_TYPE, &bt_varchar, BMD_DONE);
+  bif_define_ex ("__sec_uid_to_user", bif_sec_uid_to_user, BMD_ALIAS, "uid_to_user", BMD_RET_TYPE, &bt_varchar, BMD_DONE);
   bif_define ("current_proc_name", bif_current_proc_name);
   bif_define ("zorder_index", bif_zorder_index);
   bif_define ("rfc1808_parse_uri", bif_rfc1808_parse_uri);
@@ -1784,6 +1763,7 @@ sqlbif2_init (void)
   bif_define ("set_client_acl_restrictions", bif_set_client_acl_restrictions);
   /*bif_define ("repl_this_server", bif_this_server);*/
   /*sqls_bif_init ();*/
+  bif_define ("__log_error_event", bif_log_error_event);
   sqls_bif_init ();
   sqlo_inv_bif_int ();
 }

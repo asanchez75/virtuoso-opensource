@@ -2,7 +2,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -906,9 +906,13 @@ create procedure DB.DBA.URLREWRITE_CALC_QS (in accept varchar, in s_accept varch
 	    q := 1.0;
 	  else
 	    {
-	      tmp := split_and_decode (q, 0, '\0\0=');
-	      if (length (tmp) = 2)
-		q := atof (tmp[1]);
+              declare qtok varchar;
+             tmp := split_and_decode (trim(q), 0, '\0\0=');
+              qtok := null;
+              if (isvector (tmp) and 0 = mod (length(tmp), 2))
+                qtok := get_keyword ('q', tmp);
+	      if (qtok is not null)
+		q := atof (qtok);
 	      else
 		q := 1.0;
 	    }

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -382,6 +382,13 @@ cmp_double (double x1, double x2, double epsilon)
   double difference;
   double delta;
   int exponent;
+
+  if (isnan(x1) && isnan(x2))
+    return DVC_MATCH;
+  if (isnan(x2))
+    return DVC_LESS;
+  if (isnan(x1))
+    return DVC_GREATER;
 
   /*
    *  Get exponent(max(fabs(x1), fabs(x2))) and store it in exponent.
@@ -966,67 +973,73 @@ retry_rdf_boxes: \
     goto int_case; \
   if (dtp1 == DV_DB_NULL || dtp2 == DV_DB_NULL) \
     goto null_result; \
-  if (n_coerce ((caddr_t) & dn1, (caddr_t) & dn2, \
-	  dtp1, dtp2, &res_dtp)) \
+  if (n_coerce ((caddr_t) & dn1, (caddr_t) & dn2, dtp1, dtp2, &res_dtp)) \
     { \
       switch (res_dtp) \
-	{ \
-	case DV_LONG_INT: \
-	int_case: \
-	  if (isdiv && 0 == *(boxint *) &dn2) \
-	    sqlr_new_error ("22012", "SR084", "Division by 0."); \
-	  if (target) \
-	    return (qst_set_long (qst, target, \
-		(*(boxint *) &dn1 op * (boxint *) &dn2)), (caddr_t) 0); \
-	  return (box_num (*(boxint *) &dn1 op * (boxint *) &dn2)); \
-	case DV_SINGLE_FLOAT: \
-	  if (isdiv && 0 == *(float *) &dn2) \
-	    sqlr_new_error ("22012", "SR085", "Division by 0."); \
-	  if (target) \
-	    return (qst_set_float (qst, target, \
-		(*(float *) &dn1 op * (float *) &dn2)), (caddr_t) 0); \
-	  return (box_float (*(float *) &dn1 op * (float *) &dn2)); \
-	case DV_DOUBLE_FLOAT: \
-	  if (isdiv && 0 == *(double*) &dn2) \
-	    sqlr_new_error ("22012", "SR086", "Division by 0."); \
-	  if (target) \
-	    return (qst_set_double (qst, target, (*(double*) &dn1 op *(double*) &dn2)), (caddr_t) 0); \
-	  return (box_double (*(double*) &dn1 op *(double*) &dn2)); \
-	case DV_NUMERIC: \
-	  return (numeric_bin_op (num_op, (numeric_t) &dn1, (numeric_t) &dn2, qst, target)); \
-	} \
-    } \
-  else \
-    { \
-      if (dtp1 == DV_RDF || dtp2 == DV_RDF) \
         { \
-          if (dtp1 == DV_RDF) \
-            box1 = ((rdf_box_t *)(box1))->rb_box; \
-          if (dtp2 == DV_RDF) \
-            box2 = ((rdf_box_t *)(box2))->rb_box; \
-          goto retry_rdf_boxes; \
+        case DV_LONG_INT: \
+        int_case: \
+          if (isdiv && 0 == *(boxint *) &dn2) \
+            sqlr_new_error ("22012", "SR084", "Division by 0."); \
+          if (isdiv && *(boxint *) &dn1 <= INT64_MIN && -1 == *(boxint *) &dn2) \
+            sqlr_new_error ("22012", "SR084", "Int64 overflow."); \
+          if (target) \
+            return (qst_set_long (qst, target, \
+                (*(boxint *) &dn1 op * (boxint *) &dn2)), (caddr_t) 0); \
+          return (box_num (*(boxint *) &dn1 op * (boxint *) &dn2)); \
+        case DV_SINGLE_FLOAT: \
+          if (isdiv && 0 == *(float *) &dn2) \
+            sqlr_new_error ("22012", "SR085", "Division by 0."); \
+          if (target) \
+            return (qst_set_float (qst, target, \
+                (*(float *) &dn1 op * (float *) &dn2)), (caddr_t) 0); \
+          return (box_float (*(float *) &dn1 op * (float *) &dn2)); \
+        case DV_DOUBLE_FLOAT: \
+          if (isdiv && 0 == *(double*) &dn2) \
+            sqlr_new_error ("22012", "SR086", "Division by 0."); \
+          if (target) \
+            return (qst_set_double (qst, target, (*(double*) &dn1 op *(double*) &dn2)), (caddr_t) 0); \
+          return (box_double (*(double*) &dn1 op *(double*) &dn2)); \
+        case DV_NUMERIC: \
+          return (numeric_bin_op (num_op, (numeric_t) &dn1, (numeric_t) &dn2, qst, target)); \
         } \
-      if ((NULL != dt_op) && ((DV_DATETIME == dtp1) || (DV_DATETIME == dtp2))) \
+    } \
+  if (dtp1 == DV_RDF || dtp2 == DV_RDF) \
+    { \
+      if (dtp1 == DV_RDF) \
         { \
-          caddr_t err = NULL; \
-          caddr_t res = ((arithm_dt_operation_t *)(dt_op)) (box1, box2, &err); \
-          if (NULL == err) \
-            { \
-              if (target) \
-                return (qst_set (qst, target, res), (caddr_t)0); \
-              return res; \
-            } \
-          if (((query_instance_t *)qst)->qi_query->qr_no_cast_error) \
-            { \
-              dk_free_tree (err); \
-              goto null_result; \
-            } \
-          sqlr_resignal (err); \
+          if (!((rdf_box_t *)box1)->rb_is_complete) \
+            sqlr_new_error ("22003", "SR674", "Incomplete RDF box as left argument of arithmetic operation '%s'", opsymbol); \
+          box1 = ((rdf_box_t *)(box1))->rb_box; \
+        } \
+      if (dtp2 == DV_RDF) \
+        { \
+          if (!((rdf_box_t *)box2)->rb_is_complete) \
+            sqlr_new_error ("22003", "SR674", "Incomplete RDF box as right argument of arithmetic operation '%s'", opsymbol); \
+          box2 = ((rdf_box_t *)(box2))->rb_box; \
+        } \
+      goto retry_rdf_boxes; \
+    } \
+  if ((NULL != dt_op) && ((DV_DATETIME == dtp1) || (DV_DATETIME == dtp2) || IS_GENERIC_DURATION (box1) || IS_GENERIC_DURATION (box2))) \
+    { \
+      caddr_t err = NULL; \
+      caddr_t res = ((arithm_dt_operation_t *)(dt_op)) (box1, box2, &err); \
+      if (NULL == err) \
+        { \
+          if (target) \
+            return (qst_set (qst, target, res), (caddr_t)0); \
+          return res; \
         } \
       if (((query_instance_t *)qst)->qi_query->qr_no_cast_error) \
-        goto null_result; \
-      sqlr_new_error ("22003", "SR087", "Non numeric argument(s) to arithmetic operation '%s'.", opsymbol); \
+        { \
+          dk_free_tree (err); \
+          goto null_result; \
+        } \
+      sqlr_resignal (err); \
     } \
+  if (((query_instance_t *)qst)->qi_query->qr_no_cast_error) \
+    goto null_result; \
+  sqlr_new_error ("22003", "SR087", "Non numeric argument(s) to arithmetic operation '%s'", opsymbol); \
 null_result: \
   if (target) \
     { \
@@ -1097,10 +1110,10 @@ null_result:
   return (dk_alloc_box (0, DV_DB_NULL));
 }
 
-ARTM_BIN_FUNC (box_add, "+", +, numeric_add		, arithm_dt_add		, 0)
-ARTM_BIN_FUNC (box_sub, "-", -, numeric_subtract	, arithm_dt_subtract	, 0)
-ARTM_BIN_FUNC (box_mpy, "*", *, numeric_multiply	, NULL			, 0)
-ARTM_BIN_FUNC (box_div, "/", /, numeric_divide		, NULL			, 1)
+ARTM_BIN_FUNC (box_add, "+", +, numeric_add		, arithm_dt_add			, 0)
+ARTM_BIN_FUNC (box_sub, "-", -, numeric_subtract		, arithm_dt_subtract		, 0)
+ARTM_BIN_FUNC (box_mpy, "*", *, numeric_multiply	, arithm_duration_multiply	, 0)
+ARTM_BIN_FUNC (box_div, "/", /, numeric_divide		, arithm_duration_divide	, 1)
 
 
 caddr_t
@@ -1177,12 +1190,14 @@ dvc_num_double (numeric_t num1, double d2)
       return numeric_compare_dvc ((numeric_t) num1, (numeric_t) num2);
     }
   numeric_to_double (num1, &d1);
+  if (isnan (d2))
+    return DVC_LESS;
   if (d1 == d2)
     {
       if (d2 > MIN_INT_DOUBLE && d2 < MAX_INT_DOUBLE)
 	{
 	  NUMERIC_VAR (num2);
-	  numeric_from_double (num2, d2);
+	  numeric_from_double ((numeric_t) num2, d2);
 	  return numeric_compare_dvc ((numeric_t) num1, (numeric_t) num2);
 	}
       if (num1->n_len + num1->n_scale <= 15)
@@ -1592,8 +1607,12 @@ name (int64* res, int64 * l, int64* r, int n) \
   int inx; \
   if (is_div) \
     for (inx = 0; inx < n; inx++) \
-      if (0 == ((tp*)r)[inx]) \
-	sqlr_new_error ("22012", "SR084", "Division by 0."); \
+      { \
+        if (0 == ((tp*)r)[inx]) \
+          sqlr_new_error ("22012", "SR084", "Division by 0."); \
+        if (2 == is_div && ((tp*)l)[inx] <= INT64_MIN && -1 == ((tp*)r)[inx]) \
+          sqlr_new_error ("22012", "SR084", "Int64 overflow."); \
+      } \
   for (inx = 0; 0 && inx <= n - 2 * vec_len; inx += 2 * vec_len) \
     { \
       *(vect*)&((tp*)res)[inx] = *(vect*)&((tp*)l)[inx] op  *(vect*)&((tp*)r)[inx]; \
@@ -1616,7 +1635,7 @@ ARTM_VEC (artm_mpy_int, int64, v2di_t, 2, *, 0);
 ARTM_VEC (artm_mpy_float, float, v4sf_t, 4, *, 0);
 ARTM_VEC (artm_mpy_double, double, v2df_t, 2, *, 0);
 
-ARTM_VEC (artm_div_int, int64, v2di_t, 2, /, 1);
+ARTM_VEC (artm_div_int, int64, v2di_t, 2, /, 2);
 ARTM_VEC (artm_div_float, float, v4sf_t, 4, /, 1);
 ARTM_VEC (artm_div_double, double, v2df_t, 2, /, 1);
 
@@ -1946,15 +1965,15 @@ CMP_VEC (cmp_vec_dbl_lte, double, <=)
 
 
 vec_cmp_t int_cmp_ops[] = {NULL, cmp_vec_int_eq, cmp_vec_int_lt, cmp_vec_int_lte};
-vec_cmp_t sf_cmp_ops[] = {NULL, cmp_vec_sf_eq, cmp_vec_sf_lt, cmp_vec_sf_lte};
-vec_cmp_t dbl_cmp_ops[] = {NULL, cmp_vec_dbl_eq, cmp_vec_dbl_lt, cmp_vec_dbl_lte};
+vec_cmp_t sf_cmp_ops[] = {NULL, (vec_cmp_t)cmp_vec_sf_eq, (vec_cmp_t)cmp_vec_sf_lt, (vec_cmp_t)cmp_vec_sf_lte};
+vec_cmp_t dbl_cmp_ops[] = {NULL, (vec_cmp_t)cmp_vec_dbl_eq, (vec_cmp_t)cmp_vec_dbl_lt, (vec_cmp_t)cmp_vec_dbl_lte};
 
 
 
 
 
 #define CMP_VEC_OP(name, dtp, op) \
-void name  (dtp * l, dtp * r, int n_sets, dtp_t * set_mask, dtp_t * res_bits, dtp_t cmp_op, char * mix_ret) \
+void name  (dtp l, dtp r, int n_sets, dtp_t * set_mask, dtp_t * res_bits, dtp_t cmp_op, char * mix_ret) \
 { \
   int set; \
   char mix = *mix_ret; \
@@ -1996,8 +2015,9 @@ dt_cmp_fl (db_buf_t dt1, db_buf_t dt2)
 }
 
 
-CMP_VEC_OP (cmp_vec_dt, dtp_t *, cmp_op & dt_cmp_fl (((db_buf_t)l) + DT_LENGTH * set, ((db_buf_t)r) + DT_LENGTH * set))
-CMP_VEC_OP (cmp_vec_any, dtp_t **, cmp_op & dv_compare (((db_buf_t*)l)[set], ((db_buf_t*)r)[set], NULL, 0))
+CMP_VEC_OP (cmp_vec_dt, void *, cmp_op & dt_cmp_fl (((db_buf_t)l) + DT_LENGTH * set, ((db_buf_t)r) + DT_LENGTH * set))
+CMP_VEC_OP (cmp_vec_any, void *, cmp_op & dv_compare (((db_buf_t*)l)[set], ((db_buf_t*)r)[set], NULL, 0))
+
 #define SWAP(t, l, r) { t tmp; tmp = r; r = l; l = tmp;}
 #define CMP_REV(new_op) \
   { cmp_op = new_op; SWAP (dtp_t, l_dtp, r_dtp); SWAP (state_slot_t *, l, r);}
@@ -2066,7 +2086,7 @@ CMP_VEC_OP (cmp_vec_any, dtp_t **, cmp_op & dv_compare (((db_buf_t*)l)[set], ((d
 	    la = ssl_artm_param (inst, l, (int64 *) & vn_temp_1.i, DV_DATETIME, inx, n, NULL, NULL);
 	  if (!inx || (SSL_VEC == r->ssl_type || SSL_REF == r->ssl_type))
 	    ra = ssl_artm_param (inst, r, (int64 *) & vn_temp_2.i, DV_DATETIME, inx, n, NULL, NULL);
-	  cmp_vec_dt ((db_buf_t)la, (db_buf_t)ra, n, set_mask ? &set_mask[inx / 8] : NULL, &res_bits[inx / 8], cmp_op, &mix);
+	  cmp_vec_dt (la, ra, n, set_mask ? &set_mask[inx / 8] : NULL, &res_bits[inx / 8], cmp_op, &mix);
 	}
       return mix - 1;
     }

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -693,6 +693,112 @@ sqlp_box_upcase (const char *str)
   return s;
 }
 
+int
+sqlp_tree_check_sz (ptrlong type, sql_tree_t * tree)
+{
+  #define st_head ((sql_tree_t *)0)->_
+  size_t len = sizeof (ptrlong);
+  switch (type)
+    {
+      case SELECT_STMT:
+          len += sizeof (st_head.select_stmt);
+          break;
+
+      case SELECT_TOP:
+          len += sizeof (st_head.top);
+          break;
+
+      case ANY_PRED:
+      case ALL_PRED:
+      case SOME_PRED:
+      case ONE_PRED:
+      case EXISTS_PRED:
+      case IN_SUBQ_PRED:
+          len += sizeof (st_head.subq);
+          break;
+
+      case TABLE_EXP:
+          len += sizeof (st_head.table_exp);
+          break;
+
+      case TABLE_REF:
+      case DERIVED_TABLE:
+          len += sizeof (st_head.table_ref);
+          break;
+
+      case JOINED_TABLE:
+          len += sizeof (st_head.join);
+          break;
+
+      case COL_DOTTED:
+          len += sizeof (st_head.col_ref);
+          len -= (2 * sizeof (caddr_t)); /* most are name & prefix */
+          break;
+
+      case TABLE_DOTTED:
+          len += sizeof (st_head.table);
+          len -= sizeof (caddr_t); /* may not have opts */
+          break;
+
+      case CALL_STMT:
+          len += sizeof (st_head.call);
+          len -= (3 * sizeof (ptrlong)); /* most are stored procedures w/o return type, static methods has 4th member */
+          break;
+
+      case ORDER_BY: /* XXX: same as INSERT_VALUES, we take shorter atm */
+          len += sizeof (st_head.ins_vals /* o_spec */);
+          break;
+
+      case UNION_ST:
+      case UNION_ALL_ST:
+          len += sizeof (st_head.set_exp);
+          break;
+      case EXCEPT_ST:
+      case EXCEPT_ALL_ST:
+      case INTERSECT_ST:
+      case INTERSECT_ALL_ST:
+          len += sizeof (st_head.set_exp) - sizeof (ptrlong); /* best is for union */
+          break;
+
+      case BOP_AS:
+          len += sizeof (st_head.as_exp);
+          len -= sizeof (ptrlong); /* xml col is optional */
+          break;
+
+      case FUN_REF:
+          len += sizeof (st_head.fn_ref);
+          break;
+
+      case BOP_NOT:
+      case BOP_OR:
+      case BOP_AND:
+      case BOP_PLUS:
+      case BOP_MINUS:
+      case BOP_TIMES:
+      case BOP_DIV:
+      case BOP_EQ:
+      case BOP_NEQ:
+      case BOP_LT:
+      case BOP_LTE:
+      case BOP_GT:
+      case BOP_GTE:
+      case BOP_LIKE:
+      case BOP_NULL:
+      case BOP_SAME:
+      case BOP_NSAME:
+      case BOP_IN_ATOM:
+      case BOP_MOD:
+          len += sizeof (st_head.bin_exp);
+          len -= (2 * sizeof (caddr_t)); /* more & serial are optional */
+          break;
+
+      default:
+          break;
+    }
+  if (len > box_length(tree))
+    return 0;
+  return 1;
+}
 
 caddr_t
 t_sqlp_box_upcase (const char *str)
@@ -720,7 +826,6 @@ t_sqlp_box_id_quoted (const char *str, int end_ofs)
   s = t_sym_string (buf);
   return s;
 }
-
 
 #if 0
 caddr_t
@@ -1816,14 +1921,14 @@ sqlp_bunion_flag (ST * l, ST * r, long f)
 }
 
 ST *
-sqlp_wpar_nonselect (ST *subq)
+sqlp_wrap_nonselect (ST *subq, int generate_names)
 {
   ST *tbl_ref, *from_clause, *tbl_exp, **selection, *wrapped_subq;
   char tname[100];
   if (ST_P (subq, SELECT_STMT))
     return subq;
   snprintf (tname, sizeof (tname), "_subq_%ld", (long)((ptrlong)(subq)));
-  tbl_ref = t_listst (3, DERIVED_TABLE, sqlp_view_def (NULL, subq, 0), t_box_string (tname));
+  tbl_ref = t_listst (3, DERIVED_TABLE, sqlp_view_def (NULL, subq, generate_names), t_box_string (tname));
   from_clause = t_listst (1, tbl_ref);
   tbl_exp = sqlp_infoschema_redirect (t_listst (9, TABLE_EXP, from_clause, NULL, NULL, NULL, NULL, (ptrlong) 0, NULL, NULL));
   selection = (ST **)t_list (1, t_listst (3, COL_DOTTED, (long) 0, STAR));
@@ -1889,7 +1994,7 @@ sqlp_contains_opts (ST * tree)
 	{
 	  if (inx < 2)
 	    continue;
-	  if (ST_COLUMN (arg, COL_DOTTED))
+	  if (ST_COLUMN (arg, COL_DOTTED) && STAR != arg->_.col_ref.name)
 	    {
 	      caddr_t name = arg->_.col_ref.name;
 	      if (0 == stricmp (name, "offband")
@@ -1962,6 +2067,8 @@ sqlp_sqlxml (ST * tree)
       if (0 == BOX_ELEMENTS (tree->_.call.params))
 	yyerror ("Function XMLELEMENT should have at least one argument that is element name");
       arg = tree->_.call.params[0];
+      if (ST_COLUMN (arg, COL_DOTTED) && STAR == arg->_.col_ref.name)
+        yyerror ("A `*` is not allowed as input for SQLXML functions");
       if (ST_COLUMN (arg, COL_DOTTED))
 	tree->_.call.params[0] = (ST *) t_box_string (arg->_.col_ref.name);
       return;
@@ -1974,6 +2081,8 @@ sqlp_sqlxml (ST * tree)
       tree->_.call.params = new_params;
       DO_BOX (ST *, arg, inx, old_params)
 	{
+          if (ST_COLUMN (arg, COL_DOTTED) && STAR == arg->_.col_ref.name)
+            yyerror ("A `*` is not allowed as input for SQLXML functions");
 	  if (ST_P (arg, BOP_AS))
 	    {
 	      new_params[inx*2] = (ST *) t_box_string ((caddr_t) arg->_.as_exp.name);
@@ -2282,9 +2391,13 @@ generic_check:
 	  lit = (ST *)(t_full_box_copy_tree (ret_val));
 	  if (DV_TYPE_OF (ret_val) == DV_RDF)
 	    lit = t_listst (3, CALL_STMT, t_sqlp_box_id_upcase ("__rdflit"), t_list (1, lit));
-            dk_free_box (ret_val);
+          dk_free_box (ret_val);
           return lit;
 not_a_constant_pure: ;
+        }
+      if (bmd->bmd_no_fold)
+        {
+          funcall_tree = t_listst (6, CALL_STMT, funcall_tree->_.call.name, funcall_tree->_.call.params, NULL, NULL, t_box_num (sqlp_bin_op_serial++));
         }
     }
   sqlp_check_arg (funcall_tree);
@@ -2332,13 +2445,24 @@ sqlp_in_exp (ST * left, dk_set_t  right, int is_not)
     }
   else
     {
-      ST * res =
-	t_listst (3, CALL_STMT, uname_one_of_these,
-		t_list_to_array (t_CONS (left, right)));
+      caddr_t * args = t_list_to_array (t_CONS (left, right));
+      int is_const_in = 1;
+      ST * res = t_listst (3, CALL_STMT, uname_one_of_these, args);
+      res = t_listst (5, BOP_LT, t_box_num (0), res, NULL, 0);
       if (is_not)
-	return (t_listst (3, BOP_EQ, t_box_num (0), res));
-      else
-	return (t_listst (3, BOP_LT, t_box_num (0), res));
+        res->type = BOP_EQ;
+      DO_BOX (ST *, exp, inx, args)
+        {
+          if (DV_ARRAY_OF_POINTER == DV_TYPE_OF (exp) && !(BIN_EXP_P(exp) && IS_ARITM_BOP(exp->type)))
+            {
+              is_const_in = 0;
+              break;
+            }
+        }
+      END_DO_BOX;
+      if (is_const_in) /* avoid IN of constants to be eliminated in plan */
+        res->_.bin_exp.serial = t_box_num (sqlp_bin_op_serial++);
+      return res;
     }
 }
 
@@ -2647,14 +2771,14 @@ sqlp_is_num_lit (caddr_t x)
 
 
 char *
-sqlp_default_cluster ()
+sqlp_default_cluster (void)
 {
   return "__ALL";
 }
 
 
 dk_set_t
-cl_all_host_group_list ()
+cl_all_host_group_list (void)
 {
   dk_hash_t *visited = NULL;
   dk_set_t res = NULL;
@@ -2716,7 +2840,7 @@ sqlp_index_default_opts(dk_set_t opts)
 }
 
 char *
-sqlp_inx_col_opt ()
+sqlp_inx_col_opt (void)
 {
     return "column";
 }

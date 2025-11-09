@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -24,7 +24,7 @@
  *  51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  *
  */
-
+#include "../Dk/Dkconfig.h"
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
@@ -361,7 +361,7 @@ it_not_in_any (du_thread_t * self, index_tree_t * except)
 
 #ifdef DBSE_TREES_DEBUG
 int
-dbg_it_print_trees ()
+dbg_it_print_trees (void)
 {
   DO_SET (dbe_storage_t *, dbs, &wi_inst.wi_storage)
     {
@@ -458,7 +458,7 @@ it_temp_tree_done (index_tree_t * it)
 
 
 void
-it_temp_tree_check ()
+it_temp_tree_check (void)
 {
   DO_SET (index_tree_t *, it, &temp_trees)
     {
@@ -484,10 +484,6 @@ it_temp_tree_check ()
 #define it_temp_tree_check(a)
 #endif
 
-
-#ifdef WIN32
-#define PATH_MAX	 MAX_PATH
-#endif
 
 void
 dbs_sys_db_file_remove (caddr_t file)
@@ -564,6 +560,10 @@ DBG_NAME (it_temp_allocate) (DBG_PARAMS dbe_storage_t * dbs)
     }
   else
     {
+#ifdef DEBUG
+      if (0 != tree->it_ref_count)
+        GPF_T1 ("Non-zero it_ref_count after resource_get()");
+#endif
       tree->it_ref_count = 1;
       tree->it_hi = NULL;
       tree->it_storage = dbs;
@@ -672,15 +672,15 @@ DBG_NAME (it_temp_free) (DBG_PARAMS index_tree_t * it)
   for (inx = 0; inx < IT_N_MAPS; inx++)
     {
       it_map_t * itm = &it->it_maps[inx];
- again:
       ITC_IN_KNOWN_MAP (itc, inx);
+ again:
       dk_hash_iterator (&hit, &itm->itm_dp_to_buf);
   while (dk_hit_next (&hit, (void**) &dp, (void **) &buf))
     {
 	  ASSERT_IN_MAP (itc->itc_tree, inx);
 	  if (buf->bd_tree && buf->bd_tree != it)
 	GPF_T1 ("it_temp_free with buffer that belongs to other tree");
-      buf->bd_is_dirty = 0;
+      BUF_SET_IS_DIRTY(buf,0);
       if (BUF_WIRED (buf)
 	      ||buf->bd_iq)
 	{
@@ -706,7 +706,7 @@ DBG_NAME (it_temp_free) (DBG_PARAMS index_tree_t * it)
 	}
       BUF_BACKDATE(buf);
 	  buf->bd_tree = NULL;
-      buf->bd_is_dirty = 0;
+      BUF_SET_IS_DIRTY(buf,0);
       buf->bd_page = 0;
       buf->bd_physical_page = 0;
       buf_unregister_itcs (buf);
@@ -740,6 +740,30 @@ DBG_NAME (it_temp_free) (DBG_PARAMS index_tree_t * it)
 	it_free (it);
     }
   return 1;
+}
+
+void
+it_temp_write_cancel (index_tree_t * tree)
+{
+  int inx;
+  ptrlong dp;
+  buffer_desc_t * buf;
+  dk_hash_iterator_t hit;
+  if (KI_TEMP != tree->it_key->key_id)
+    GPF_T1 ("it_temp_write_cancel is supposed to use with temp tree only");
+  for (inx = 0; inx < IT_N_MAPS; inx++)
+    {
+      it_map_t * itm = &tree->it_maps[inx];
+      dk_hash_iterator (&hit, &itm->itm_dp_to_buf);
+      while (dk_hit_next (&hit, (void**) &dp, (void **) &buf))
+        {
+          if (!BUF_WIRED(buf))
+            continue;
+          if (buf->bd_iq)
+            buf_cancel_write (buf);
+          BD_SET_IS_WRITE (buf, 0);
+        }
+    }
 }
 
 
@@ -781,7 +805,7 @@ static int bg_free_buffers = 0;
 static dk_mutex_t *bg_mutex = NULL;
 
 buffer_group_t *
-buffer_group_allocate ()
+buffer_group_allocate (void)
 {
   B_NEW_VARZ (buffer_group_t, bg);
   bg->bg_buffer0 = ALIGN_8K (bg->bg_space);
@@ -1112,9 +1136,9 @@ bp_flush (buffer_pool_t * bp, int wait)
 
 
 int bp_stat_action (buffer_pool_t * bp, int stat_only);
-extern uint32 col_ac_last_time;
+extern time_msec_t col_ac_last_time;
 extern uint32 col_ac_last_duration;
-int col_ac_is_due (uint32 now);
+int col_ac_is_due (time_msec_t now);
 int enable_flush_all = 1;
 
 void
@@ -1440,27 +1464,26 @@ bp_get_buffer_1 (buffer_pool_t * bp, buffer_pool_t ** action_bp_ret, int mode)
 
 long gpf_time = 0;
 
-#ifdef MTX_DEBUG
+#if defined(MTX_DEBUG) | defined(BUF_FLAGS_DEBUG) | defined(PAGE_DEBUG)
 int
-buf_set_dirty (buffer_desc_t * buf)
+buf_set_dirty_1 (char *file, int line, buffer_desc_t * buf)
 {
   /* Not correct, exception in pg_reloc_right_leaves.
     if (!BUF_WIRED (buf))
     GPF_T1 ("can't set a buffer as dirty if not on it.");
   */
 
-#ifdef MTX_DEBUG
-    {
-    it_map_t * itm = IT_DP_MAP (buf->bd_tree, buf->bd_page);
-    mutex_enter (&itm->itm_mtx);
-    assert (gethash (DP_ADDR2VOID(buf->bd_page), &itm->itm_remap));
-    mutex_leave (&itm->itm_mtx);
-    }
-#endif
+  it_map_t * itm = IT_DP_MAP (buf->bd_tree, buf->bd_page);
+  mutex_enter (&itm->itm_mtx);
+  assert (gethash (DP_ADDR2VOID(buf->bd_page), &itm->itm_remap));
+  mutex_leave (&itm->itm_mtx);
+
   if (!buf->bd_is_dirty)
     {
       /* BUF_TICK (buf); */
-      buf->bd_is_dirty = 1;
+      BUF_SET_IS_DIRTY(buf,1);
+      buf->bd_set_dirty_file = file;
+      buf->bd_set_dirty_line = line;
       wi_inst.wi_n_dirty++;
       if (0 && wi_inst.wi_n_dirty > wi_inst.wi_max_dirty
 	  && !mt_write_pending)
@@ -1474,24 +1497,23 @@ buf_set_dirty (buffer_desc_t * buf)
 
 
 int
-buf_set_dirty_inside (buffer_desc_t * buf)
+buf_set_dirty_inside_1 (char *file, int line, buffer_desc_t * buf)
 {
+  it_map_t * itm;
   if (!BUF_WIRED (buf))
     GPF_T1 ("can't set a buffer as dirty if not on it.");
 
-#ifdef MTX_DEBUG
-    {
-    it_map_t * itm = IT_DP_MAP (buf->bd_tree, buf->bd_page);
-    ASSERT_IN_MTX (&itm->itm_mtx);
-    if (!gethash (DP_ADDR2VOID(buf->bd_page), &itm->itm_remap)) GPF_T1 ("not remapped when being set to dirty");
-    }
-#endif
+  itm = IT_DP_MAP (buf->bd_tree, buf->bd_page);
+  ASSERT_IN_MTX (&itm->itm_mtx);
+  if (!gethash (DP_ADDR2VOID(buf->bd_page), &itm->itm_remap)) GPF_T1 ("not remapped when being set to dirty");
 
   if (!buf->bd_is_dirty)
     {
       wi_inst.wi_n_dirty++;
       /* BUF_TICK (buf); */
-      buf->bd_is_dirty = 1;
+      BUF_SET_IS_DIRTY(buf,1);
+      buf->bd_set_dirty_file = file;
+      buf->bd_set_dirty_line = line;
       return 1;
     }
   return 0;
@@ -1537,7 +1559,7 @@ buf_set_last (buffer_desc_t * buf)
   if (buf->bd_is_dirty)
     {
       wi_inst.wi_n_dirty--;
-      buf->bd_is_dirty = 0;
+      BUF_SET_IS_DIRTY(buf,0);
     }
   buf->bd_timestamp = bp->bp_ts - bp->bp_n_bufs;
 }
@@ -1566,7 +1588,7 @@ bp_mtx_entry_check (dk_mutex_t * mtx, du_thread_t * self, void * cd)
 }
 
 int enable_buf_mprotect = 0;
-#if defined(PAGE_DEBUG) || defined(MTX_DEBUG)
+#ifdef PAGE_DEBUG
 void
 buf_prot_read (buffer_desc_t * buf)
 {
@@ -2047,8 +2069,8 @@ dst_fd_done (disk_stripe_t * dst, int fd, ext_ref_t * er)
 
 unsigned long disk_reads = 0;
 long disk_writes = 0;
-long read_cum_time = 0;
-long write_cum_time = 0;
+int64 read_cum_time = 0;
+int64 write_cum_time = 0;
 int assertion_on_read_fail = 1;
 
 #if 0
@@ -2109,7 +2131,7 @@ pm_get (buffer_desc_t * buf, size_t sz)
 int
 buf_disk_read (buffer_desc_t * buf)
 {
-  long start;
+  time_msec_t start;
   OFF_T rc;
   dbe_storage_t * dbs = buf->bd_storage;
   short flags;
@@ -2223,7 +2245,7 @@ buf_disk_write (buffer_desc_t * buf, dp_addr_t phys_dp_to)
 {
   dtp_t c_buf[PAGE_SZ + 512];
   db_buf_t out = (db_buf_t)_RNDUP_PWR2  (((ptrlong)&c_buf), 512);
-  long start;
+  time_msec_t start;
   int bytes, n_out;
   short flags;
   dbe_storage_t * dbs = buf->bd_storage;
@@ -3128,7 +3150,7 @@ typedef struct digit_sort_s
 
 
 digit_sort_t *
-ds_allocate ()
+ds_allocate (void)
     {
   return (digit_sort_t *) dk_alloc_box (sizeof (digit_sort_t), DV_BIN);
     }
@@ -3443,7 +3465,7 @@ dc_digit_sort (data_col_t ** dcs, int n_dcs, int * sets, int n_sets)
 
 
 
-long last_flush_time = 0;
+time_msec_t last_flush_time = 0;
 
 
 void
@@ -3483,7 +3505,7 @@ bp_write_dirty (buffer_pool_t * bp, int force, int is_in_bp, int n_oldest)
 		      /* If the buffer hasn't moved out of sort order and
 			 hasn't been flushed by a sync write */
 		      BD_SET_IS_WRITE (buf, 1);
-		      buf->bd_is_dirty = 0;
+                      BUF_SET_IS_DIRTY(buf,0);
 		      bufs[fill++] = buf;
 		    }
 		  mutex_leave (&itm->itm_mtx);
@@ -3505,7 +3527,7 @@ bp_write_dirty (buffer_pool_t * bp, int force, int is_in_bp, int n_oldest)
     {
       /* dbg_printf ((" %ld ", bufs [n] -> bd_physical_page));  */
       buf_disk_write (bufs[n], 0);
-      bufs[n]->bd_is_dirty = 0;
+      BUF_SET_IS_DIRTY(bufs[n],0);
       wi_inst.wi_n_dirty--;
       if (!force)
 	{
@@ -3758,7 +3780,8 @@ semaphore_t * dst_sync_sem;
 void
 dst_sync (caddr_t * xx)
 {
-  uint32 start, inx;
+  time_msec_t start; 
+  int inx;
   dbe_storage_t * dbs = (dbe_storage_t*)xx[0];
   io_queue_t * iq = (io_queue_t*)xx[1];
   DO_SET (disk_segment_t *, seg, &dbs->dbs_disks)
@@ -3885,6 +3908,9 @@ dbs_init_id (char * str)
   MD5_Final ((unsigned char*)str, &ctx);
 }
 
+extern int32 rdf_rpid64_mode;
+extern int32 xte_use_mhash;
+
 void
 dbs_write_cfg_page (dbe_storage_t * dbs, int is_first)
 {
@@ -3935,6 +3961,9 @@ dbs_write_cfg_page (dbe_storage_t * dbs, int is_first)
   if (-1 == timezoneless_datetimes)
     timezoneless_datetimes = DT_TZL_BY_DEFAULT;
   db.db_timezoneless_datetimes = timezoneless_datetimes;
+  /* should we check it is set to true? */
+  db.db_rdf_id64 = rdf_rpid64_mode;
+  db.db_xte_hash_mode = xte_use_mhash;
   LSEEK (fd, 0, SEEK_SET);
   memcpy (zero, &db, sizeof (db));
   rc = write (fd, zero, PAGE_SZ);
@@ -4372,6 +4401,8 @@ dbs_read_cfg_page (dbe_storage_t * dbs, wi_database_t * cfg_page)
         }
       timezoneless_datetimes = cfg_page->db_timezoneless_datetimes;
     }
+  rdf_rpid64_mode = cfg_page->db_rdf_id64;
+  xte_use_mhash = cfg_page->db_xte_hash_mode;
   if (cfg_page->db_byte_order != DB_ORDER_UNKNOWN && cfg_page->db_byte_order != DB_SYS_BYTE_ORDER)
     {
 #ifdef BYTE_ORDER_REV_SUPPORT
@@ -4396,7 +4427,7 @@ char * db_version_string = DBMS_SRV_VER_ONLY;
 volatile int db_exists = 0;
 
 void
-wi_storage_offsets ()
+wi_storage_offsets (void)
 {
   /* give each storage a sort offset so they get flushed in order */
   dp_addr_t total = 0;
@@ -4604,7 +4635,7 @@ _cfg_read_storages (caddr_t **temp_storage)
 
 
 void
-wi_open_dbs ()
+wi_open_dbs (void)
 {
   int sec_exists;
 /*  char line_buf[2000];	*/	/* Was 100 */
@@ -4828,7 +4859,7 @@ it_copy_cb (caddr_t x)
 #include <sched.h>
 
 void
-wi_init_process ()
+wi_init_process (void)
 {
   int rc;
   struct sched_param p;
@@ -5073,7 +5104,7 @@ key_dropped (dbe_key_t * key)
 	{
 	  itc->itc_page = buf->bd_page;
 	  ITC_IN_KNOWN_MAP (itc, buf->bd_page);
-      itc_delta_this_buffer (itc, buf, DELTA_MAY_LEAVE);
+          itc_delta_this_buffer (itc, buf, DELTA_MAY_LEAVE);
 	  it_free_page (kf->kf_it, buf);
 	  ITC_LEAVE_MAP_NC (itc);
 	}
@@ -5176,7 +5207,7 @@ resources_reaper (void)
 
 
 wi_db_t *
-wi_ctx_db ()
+wi_ctx_db (void)
 {
   return (wi_inst.wi_master_wd);
 }

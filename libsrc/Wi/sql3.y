@@ -8,7 +8,7 @@
  *   This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *   project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *   This project is free software; you can redistribute it and/or modify it
  *   under the terms of the GNU General Public License as published by the
@@ -235,6 +235,8 @@ extern int scn3yylex (void *void_yylval, yyscan_t yyscanner);
 
 %type <intval> opt_with_data
 %type <intval> base_table_opt
+%type <intval> opt_not_exists
+%type <intval> opt_if_exists
 %type <tree> base_table_def
 %type <tree> view_def
 %type <tree> view_def_select_and_opt
@@ -352,6 +354,7 @@ extern int scn3yylex (void *void_yylval, yyscan_t yyscanner);
 %type <tree> opt_remote_name
 %type <tree> set_pass
 %type <box> user
+%type <box> user_password_opt
 %type <box> grantee
 %type <list> grantee_commalist
 
@@ -840,13 +843,22 @@ base_table_opt
 	| DISTINCT COLUMN { $$ = T_DISTINCT_COLUMNS; }
 	;
 
+opt_not_exists
+	:			{ $$ = 0; }
+	| IF NOT EXISTS		{ $$ = 1; }
+	;
+
+opt_if_exists
+	:			{ $$ = 0; }
+	| IF EXISTS		{ $$ = 1; }
+	;
 
 base_table_def
-	: CREATE TABLE new_table_name '(' base_table_element_commalist ')' base_table_opt
-		{ $$ = t_listst (4, TABLE_DEF, $3,
-				 t_list_to_array (sqlc_ensure_primary_key (sqlp_process_col_options ($3, $5))), (ptrlong) $7); }
+	: CREATE TABLE new_table_name '(' base_table_element_commalist ')' base_table_opt opt_not_exists
+		{ $$ = t_listst (5, TABLE_DEF, $3,
+				 t_list_to_array (sqlc_ensure_primary_key (sqlp_process_col_options ($3, $5))), (ptrlong) $7, (ptrlong) $8); }
         | CREATE TABLE new_table_name AS query_exp opt_with_data
-		{ $$ = t_listst (4, CREATE_TABLE_AS, $3, $5, t_box_num ((ptrlong) $6)); }
+		{ $$ = t_listst (4, CREATE_TABLE_AS, $3, sqlp_view_def (NULL, $5, 1), t_box_num ((ptrlong) $6)); }
 	;
 
 base_table_element_commalist
@@ -1044,16 +1056,16 @@ opt_index_option_list
 
 create_index_def
 	: CREATE opt_index_option_list INDEX index
-		ON q_table_name '(' index_column_commalist ')'
-		{ $$ = t_listst (5, INDEX_DEF, $4, $6, t_list_to_array ($8), $2); }
+		ON q_table_name '(' index_column_commalist ')' opt_not_exists
+		{ $$ = t_listst (6, INDEX_DEF, $4, $6, t_list_to_array ($8), $2, (ptrlong) $10); }
 	| CREATE opt_index_option_list INDEX index
-	ON q_table_name '(' index_column_commalist ')' PARTITION opt_cluster col_part_list
+	ON q_table_name '(' index_column_commalist ')' PARTITION opt_cluster col_part_list opt_not_exists
 { ST * opts = (ST *) t_box_append_1  ((caddr_t) $2, (caddr_t) t_listst (5, PARTITION_DEF,  NULL, NULL, $11, t_list_to_array ($12)));
-		 $$ = t_listst (5, INDEX_DEF, $4, $6, t_list_to_array ($8), opts); }
+		 $$ = t_listst (6, INDEX_DEF, $4, $6, t_list_to_array ($8), opts, (ptrlong) $13); }
 	;
 
 drop_index
-	: DROP INDEX identifier opt_table   { $$ = t_listst (3, INDEX_DROP, $3, $4); }
+	: DROP INDEX identifier opt_table opt_if_exists  { $$ = t_listst (4, INDEX_DROP, $3, $4, $5); }
 	;
 
 opt_table
@@ -1062,8 +1074,8 @@ opt_table
 	;
 
 drop_table
-	: DROP TABLE q_table_name	{ $$ = t_listst (2, TABLE_DROP, $3); }
-	| DROP VIEW q_table_name	{ $$ = t_listst (2, TABLE_DROP, $3); }
+	: DROP TABLE q_table_name opt_if_exists	{ $$ = t_listst (4, TABLE_DROP, $3, (ptrlong) $4, (ptrlong) 0); }
+	| DROP VIEW q_table_name opt_if_exists	{ $$ = t_listst (4, TABLE_DROP, $3, (ptrlong) $4, (ptrlong) 1); }
 	;
 
 opt_col_add_column
@@ -1082,22 +1094,22 @@ add_col_column_list
 	;
 
 add_column
-	: ALTER TABLE q_table_name ADD opt_col_add_column add_col_column_def_list
+	: ALTER TABLE q_table_name ADD opt_col_add_column add_col_column_def_list opt_not_exists
 		{
 		  dk_set_t ret = NULL, col_defs_list = $6;
 		  DO_SET (dk_set_t, col_def, &col_defs_list)
 		    {
-		      t_set_push (&ret, t_listst (3, ADD_COLUMN, $3, t_list_to_array (col_def)));
+		      t_set_push (&ret, t_listst (4, ADD_COLUMN, $3, t_list_to_array (col_def), (ptrlong)$7));
 		    }
 		  END_DO_SET ();
 		  $$ = ret;
 		}
-	| ALTER TABLE q_table_name DROP opt_col_add_column add_col_column_list
+	| ALTER TABLE q_table_name DROP opt_col_add_column add_col_column_list opt_if_exists
 		{
 		  dk_set_t ret = NULL, col_ref_list = $6;
 		  DO_SET (caddr_t, col_ref, &col_ref_list)
 		    {
-		      t_set_push (&ret, t_listst (3, DROP_COL, $3, col_ref));
+		      t_set_push (&ret, t_listst (4, DROP_COL, $3, col_ref, (ptrlong)$7));
 		    }
 		  END_DO_SET ();
 		  $$ = ret;
@@ -1242,11 +1254,9 @@ opt_with_admin_option
 	;
 
 privilege_revoke
-/* CAUSES GPF !
-	: REVOKE ALL PRIVILEGES FROM grantee_commalist
-		{ $$ = t_listst (4, GRANT_STMT, NULL, NULL, list_to_array ($5)); }
-*/
-	: REVOKE privileges ON table FROM grantee_commalist
+	: REVOKE ALL PRIVILEGES FROM user
+		{ $$ = t_listst (3, SET_GROUP_STMT, $5, $5); }
+	| REVOKE privileges ON table FROM grantee_commalist
 		{ $$ = t_listst (4, REVOKE_STMT, $2, $4, t_list_to_array ($6)); }
 
 	| REVOKE EXECUTE ON function_name FROM grantee_commalist
@@ -1340,8 +1350,14 @@ set_pass
 			{ $$ = t_listst (3, SET_PASS_STMT, $3, $4); }
 	;
 
+user_password_opt
+        :  /* dummy */              { $$ = NULL; }
+        |  WITH PASSWORD identifier { $$ = $3; }
+        |  IDENTIFIED BY identifier { $$ = $3; }
+        ;
+
 create_user_statement
-	: CREATE USER user	{ $$ = t_listst (2, CREATE_USER_STMT, $3); }
+	: CREATE USER user user_password_opt	{ $$ = t_listst (3, CREATE_USER_STMT, $3, (NULL != $4 ? $4 : $3)); }
 	| CREATE ROLE_L user    { $$ = t_listst (2, CREATE_ROLE_STMT, $3); }
 	;
 
@@ -1446,8 +1462,11 @@ ordering_spec_commalist
 	;
 
 ordering_spec
-	: scalar_exp opt_asc_desc
-		{ $$ = t_listst (4, ORDER_BY, (caddr_t) $1, (ptrlong) $2, NULL);  }
+	: scalar_exp opt_asc_desc {
+                    if (ARRAYP($1) && COL_DOTTED == $1->type && $1->_.col_ref.name == STAR)
+                      yyerror (scanner, "Star not allowed for ordering");
+                    $$ = t_listst (4, ORDER_BY, (caddr_t) $1, (ptrlong) $2, NULL);
+                }
 	|  mssql_xml_col opt_asc_desc
 		{ $$ = (ST*) t_list (4, ORDER_BY, t_list (3, COL_DOTTED, NULL, sqlp_xml_col_name ($1)), (ptrlong) $2, NULL); }
 	;
@@ -2442,12 +2461,12 @@ in_predicate
 	: scalar_exp NOT IN_L subquery
 		{
 		  ST *in = NULL;
-		  in = SUBQ_PRED (SOME_PRED, $1, sqlp_wpar_nonselect ($4), BOP_EQ, NULL);
+		  in = SUBQ_PRED (SOME_PRED, $1, sqlp_wrap_nonselect ($4, 0), BOP_EQ, NULL);
 		  NEGATE ($$, in);
 		}
 	| scalar_exp IN_L subquery
 		{
-		  $$ = SUBQ_PRED (SOME_PRED, $1, sqlp_wpar_nonselect ($3), BOP_EQ, NULL); }
+		  $$ = SUBQ_PRED (SOME_PRED, $1, sqlp_wrap_nonselect ($3, 0), BOP_EQ, NULL); }
 	| scalar_exp NOT IN_L '(' scalar_exp_commalist ')'
  		{ $$ = sqlp_in_exp ($1, $5, 1);
 		}
@@ -2465,7 +2484,7 @@ atom_commalist
 
 all_or_any_predicate
 	: scalar_exp COMPARISON any_all_some subquery
-		{ $$ = SUBQ_PRED ($3, $1, sqlp_wpar_nonselect ($4), $2, NULL); }
+		{ $$ = SUBQ_PRED ($3, $1, sqlp_wrap_nonselect ($4, 0), $2, NULL); }
 	;
 
 any_all_some
@@ -2478,7 +2497,7 @@ existence_test
 	: EXISTS subquery
 		{
 		  /* exists (select * ..) becomes exists (select 1 ...) */
-		  ST * ext_subq = $2;
+		  ST * ext_subq = sqlp_wrap_nonselect ($2, 1);
 		  ext_subq->_.select_stmt.selection = (caddr_t*) t_list (1, t_box_num (1));
 		  ext_subq->_.select_stmt.top = NULL;
 		  $$ = (ST *) SUBQ_PRED (EXISTS_PRED, NULL, ext_subq, NULL, NULL); }
@@ -2908,7 +2927,7 @@ aggregate_ref
 		  $$ = sqlp_make_user_aggregate_fun_ref ($2, arglist, 1);
 		}
 /*	| AMMSC '(' '*' ')'			{ FN_REF ($$, $1, 0, 0); }*/
-| AMMSC '(' DISTINCT scalar_exp opt_sql_opt ')'	{ FN_REF ($$, $1, 1, $4); $$->_.fn_ref.fn_arglist = $5; }
+        | AMMSC '(' DISTINCT scalar_exp opt_sql_opt ')'	{ FN_REF ($$, $1, 1, $4); $$->_.fn_ref.fn_arglist = (ST **) $5; }
 	| AMMSC '(' ALL scalar_exp ')'		{ FN_REF ($$, $1, 0, $4) }
 	| AMMSC '(' scalar_exp ')'		{ FN_REF ($$, $1, 0, $3) }
 	;
@@ -2960,7 +2979,7 @@ tail_of_tag_of
 		  $$ = ((caddr_t *)$1)[0];
 		  if (!IS_BLOB_DTP($$))
 		    yyerror (scanner, "__TAG OF ... HANDLE is valid only for LONG datatypes");
-		  $$ = DV_BLOB_HANDLE_DTP_FOR_BLOB_DTP($$);
+		  $$ = (caddr_t)(ptrlong)DV_BLOB_HANDLE_DTP_FOR_BLOB_DTP($$);
 		}
 	| DICTIONARY_L REFERENCE_L { $$ = (caddr_t) DV_DICT_ITERATOR; }
 	| STREAM_L { $$ = (caddr_t) DV_STRING_SESSION; }
@@ -3415,7 +3434,7 @@ soap_proc_opt_list
 	;
 
 soap_proc_opt
-	: NAME EQUALS signed_literal { $$ = t_CONS ($1, t_CONS ($3, NULL)); }
+	: NAME EQUALS signed_literal { caddr_t name = $1; box_tag_modify (name, DV_STRING); $$ = t_CONS (name, t_CONS ($3, NULL)); }
 	;
 
 soap_kwd
@@ -4097,9 +4116,9 @@ user_defined_type
 	;
 
 user_defined_type_drop
-	: DROP TYPE q_old_type_name opt_drop_behavior
+	: DROP TYPE q_old_type_name opt_drop_behavior opt_if_exists
 	     {
-	       $$ = t_listst (3, UDT_DROP, $3, (ptrlong) $4);
+	       $$ = t_listst (4, UDT_DROP, $3, (ptrlong) $4, (ptrlong) $5);
 	     }
 	;
 

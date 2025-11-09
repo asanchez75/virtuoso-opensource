@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -492,7 +492,7 @@ xst_rule_default_priority (xp_query_t * xqr)
   if (DV_XPATH_QUERY == DV_TYPE_OF (xqr))
     {
       XT * tree = xqr->xqr_tree;
-      if (!ST_P (tree, XP_STEP))
+      if (!XT_P (tree, XP_STEP))
 	return 0.5;
       switch (tree->_.step.axis)
 	{
@@ -537,7 +537,7 @@ xte_to_template_1 (caddr_t * xte, xp_query_t *match, caddr_t name)
   if (match)
     {
       XT * tree = match->xqr_tree;
-      if (ST_P (tree, XP_STEP))
+      if (XT_P (tree, XP_STEP))
 	{
 	  if ((XP_ATTRIBUTE == tree->_.step.axis) || (XP_ATTRIBUTE_WR == tree->_.step.axis))
 	    xst->xst_match_attributes = 1;

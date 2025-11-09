@@ -7,7 +7,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -1470,7 +1470,7 @@ create function DB.DBA.RDF_PROXY_GET_HTTP_HOST ()
     else if (connection_get ('__http_host') is not null)
         default_host := connection_get ('__http_host');
     else
-        default_host := cfg_item_value (virtuoso_ini_path (), 'URIQA', 'DefaultHost');
+        default_host := virtuoso_ini_item_value ('URIQA', 'DefaultHost');
     if (default_host is not null)
         cname := default_host;
     else
@@ -1848,7 +1848,7 @@ create procedure DB.DBA.GET_XBRL_CANONICAL_NAME(in elem varchar) returns varchar
     if (elem = 'schemaRef')
 		return null;
     cur := 'http://www.openlinksw.com/schemas/xbrl/' || elem;
-    if (exists (sparql ask from <http://www.openlinksw.com/schemas/RDF_Mapper_Ontology/1.0/> {`iri(?:cur)` a rdf:Property } ) )
+    if ((sparql ask from <http://www.openlinksw.com/schemas/RDF_Mapper_Ontology/1.0/> {`iri(?:cur)` a rdf:Property } ) )
     {
         return elem;
     }
@@ -10642,7 +10642,7 @@ inout _ret_body any, inout aq any, inout ps any, inout _key any, inout opts any,
   slides_meta := unzip_file (tmpFile, 'ppt/_rels/presentation.xml.rels');
   if (core_meta is null or app_meta is null or slides_meta is null)
     return 0;
-  urihost := cfg_item_value(virtuoso_ini_path(), 'URIQA','DefaultHost');
+  urihost := virtuoso_ini_item_value ('URIQA','DefaultHost');
   fileExt := regexp_substr('.*(\.pptx|\.PPTX)\$', new_origin_uri, 1);
   fileName := subseq(new_origin_uri, strrchr(new_origin_uri, '/') + 1);
   extracted_image_collection_dav_root :='/DAV/home/dav/sponged/';

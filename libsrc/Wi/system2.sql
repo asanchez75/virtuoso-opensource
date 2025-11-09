@@ -2,7 +2,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -959,6 +959,7 @@ create procedure DB.DBA.X509_STRING_DATE (
 ;
 
 
+--!AWK PLBIF uptime
 create procedure uptime ()
 {
   declare y,m,d,h,mn int;
@@ -1043,7 +1044,7 @@ mem_hum_size (in sz integer) returns varchar
     return (sprintf ('%d MB', sz/1048576));
   if (sz < 1073741824)
     return (sprintf ('%d MB', cast (sz/1048576 as integer)));
-  return (sprintf ('%d GB', sz/1073741824));
+  return (sprintf ('%d GB', cast (0.5 + sz/1073741824.0 as integer)));
 }
 ;
 
@@ -1072,77 +1073,198 @@ create procedure DB.DBA.array2obj (
 }
 ;
 
+--
+-- IMPORTANT: Print canonical JSON, no spaces, no line breaks, just as for wire
+-- do not change, if needed make it conditional and keep canonical by default
+--
+
+--!AWK PUBLIC
 create procedure DB.DBA.obj2json (
   in o any,
   in d integer := 10,
   in nsArray any := null,
   in attributePrefix varchar := null)
 {
-  declare N, M integer;
-  declare R, T any;
-  declare S, retValue any;
+  declare ses any;
+  ses := string_output ();
+  DB.DBA.JSON_SERIALIZE_INNER (ses, o, 0, 0, d, nsArray, attributePrefix);
+  return string_output_string (ses);
+}
+;
 
-  if (d = 0)
-    return '[maximum depth achieved]';
+--!AWK PUBLIC
+create procedure DB.DBA.JSON_SERIALIZE (in o any, in indent int := 0)
+{
+  declare ses any;
+  ses := string_output ();
+  DB.DBA.JSON_SERIALIZE_INNER (ses, o, 0, indent, null, null, null);
+  return ses;
+}
+;
 
-  T := vector ('\b', '\\b', '\t', '\\t', '\n', '\\n', '\f', '\\f', '\r', '\\r', '"', '\\"', '\\', '\\\\');
-  retValue := '';
+create procedure DB.DBA.JSON_SERIALIZE_INNER (inout ses any, in o any, in depth any, in indent int := 0,
+        in max_depth int := null, in ns_array any := null, in attr_prefix varchar := null)
+{
+  declare inx integer;
+
+  if (isnumeric (max_depth) and max_depth > 0 and depth >= max_depth)
+    return '{"error":"Max depth limit exceeded"}';
+
+  if (__tag (o) = __tag of long varchar or __tag (o) = __tag of long nvarchar or __tag (o) = 126 or __tag (o) = 133)
+    o := blob_to_string (o);
+  else if (__tag (o) = __tag of stream)
+    o := string_output_string(o);
+  else if (__tag(o) = __tag of rdf_box)
+    {
+      __rdf_box_make_complete (o);
+      o := rdf_box_data(o);
+    }
+  else if (__tag(o) = 127 or __tag(o) = 183)
+    o := cast (o as varchar);
+  else if (__tag(o) = __tag of dictionary reference)
+    {
+      declare vec any;
+      vec := dict_to_vector (o, 0);
+      if (length (vec) > 0 and __tag(aref(aref(vec,0),0)) = __tag of varchar) -- if key is string, then we can map to struct
+        o := vector_concat (vector (composite(), 'structure'), vec);
+      else
+        o := vec;
+    }
+  else if (__tag(o) = __tag of nvarchar)
+    o := charset_recode (o, '_WIDE_', 'UTF-8');
+  else if (__tag(o) = __tag of XML)
+    o := serialize_to_UTF8_xml (o);
+  else if (__tag(o) = __tag of IRI_ID or __tag(o) = __tag of IRI_ID_8)
+    o := id_to_iri (o);
+
+  depth := depth + 1;
+
   if (isnull (o))
   {
-    retValue := 'null';
+      http ('null', ses);
   }
   else if (isnumeric (o))
   {
-    retValue := cast (o as varchar);
+      http_value (o, null, ses);
   }
-  else if (isstring (o))
+  else if (isstring (o) or __tag of uname = __tag (o))
   {
-    for (N := 0; N < length(o); N := N + 1)
-    {
-      R := chr (o[N]);
-      for (M := 0; M < length(T); M := M + 2)
-      {
-        if (R = T[M])
-          R := T[M+1];
-      }
-      retValue := retValue || R;
-    }
-    retValue := '"' || retValue || '"';
+    http ('"', ses);
+    http_escape (o, 14, ses, 1, 1);
+    http ('"', ses);
   }
-  else if (isarray (o) and (length (o) > 1) and ((__tag (o[0]) = 255) or (o[0] is null and (o[1] = '<soap_box_structure>' or o[1] = 'structure'))))
+  else if (__tag(o) = __tag of datetime)
   {
-    retValue := '{';
-    for (N := 2; N < length (o); N := N + 2)
+      http (concat ('"', date_iso8601(o), '"'), ses);
+  }
+  else if (isvector (o) and length (o) = 2 and __tag (o[0]) = 255 and __tag (o[1]) = __tag of integer)
     {
-      S := o[N];
-      if (chr (S[0]) = attributePrefix)
-        S := subseq (S, length (attributePrefix));
-      if (not isnull (nsArray))
+      http (case when aref(o,1) then 'true' else 'false' end, ses);
+  }
+  else if (isvector (o) and (length (o) > 1) and
+      (((__tag (aref (o,0)) = 255) and isstring (aref(o,1))) or
+       (aref (o,0) is null and (aref(o,1) = '<soap_box_structure>' or aref(o,1) = 'structure'))))
+  {
+    http ('{', ses);
+    for (inx := 2; inx < length (o); inx := inx + 2)
+    {
+        declare elm varchar;
+        elm := aref (o, inx);
+        -- next code for attr_prefix & ns_array is used by ODS, it is kept only for backward compatibility
+        if (chr (aref (elm, 0)) = attr_prefix)
+          elm := subseq (elm, 1);
+        if (isvector (ns_array))
       {
-        for (M := 0; M < length (nsArray); M := M + 1)
+            foreach (varchar pref in ns_array) do
         {
-          if (S like nsArray[M]||':%')
-            S := subseq (S, length (nsArray[M])+1);
+                if (elm like concat (pref,':%'))
+                  elm := subseq (elm, length (pref) + 1);
         }
       }
-      retValue := retValue || '"' || S || '":' || obj2json (o[N+1], d-1, nsArray, attributePrefix);
-      if (N <> length(o)-2)
-        retValue := retValue || ', ';
+        if (inx >  2)
+          http (',', ses);
+        if (indent)
+          {
+            http ('\n', ses);
+            http (repeat (' ', (depth * indent)), ses);
     }
-    retValue := retValue || '}';
+        http ('"', ses);
+        http_escape (elm, 14, ses, 1, 1);
+        http ('":', ses);
+        if (indent) http(' ', ses);
+        DB.DBA.JSON_SERIALIZE_INNER (ses, aref(o,inx + 1), depth, indent);
+      }
+    if (indent and inx > 2)
+      {
+        http ('\n', ses);
+        http (repeat (' ', ((depth - 1) * indent)), ses);
+      }
+    http ('}', ses);
   }
+  else if (__tag(o) = 254 or __tag(o) = 206)
+    {
+      declare fields, nth any;
+      fields := udt_get_info (o, 'attributes_info');
+      nth := 0;
+      http ('{', ses);
+      foreach (any field_info in fields) do
+        {
+          declare v, jv any;
+          declare nullable int;
+          declare field, null_flag varchar;
+          field := aref (field_info, 0);
+          null_flag := aref (field_info, 4);
+          if (isstring(null_flag) and null_flag in ('nullable', 'nillable', 'xsi:nillable'))
+            nullable := 1;
+          else
+            nullable := 0;
+          v := udt_get (o, field);
+          if (v is not null or nullable)
+            {
+              if (nth)
+                http (',', ses);
+              if (indent)
+                {
+                  http ('\n', ses);
+                  http (repeat (' ', (depth * indent)), ses);
+                }
+              http ('"', ses);
+              http_escape (field, 14, ses, 1, 1);
+              http ('":', ses);
+              if (indent) http(' ', ses);
+              DB.DBA.JSON_SERIALIZE_INNER (ses, v, depth, indent);
+              nth := nth + 1;
+            }
+        }
+      if (indent and nth)
+        {
+          http ('\n', ses);
+          http (repeat (' ', ((depth - 1) * indent)), ses);
+        }
+      http ('}', ses);
+    }
   else if (isarray (o))
   {
-    retValue := '[';
-    for (N := 0; N < length(o); N := N + 1)
+      http ('[', ses);
+      for (inx := 0; inx < length(o); inx := inx + 1)
     {
-      retValue := retValue || obj2json (o[N], d-1, nsArray, attributePrefix);
-      if (N <> length(o)-1)
-        retValue := retValue || ',\n';
+          if (inx)
+            http (',', ses);
+          if (indent)
+            {
+              http ('\n', ses);
+              http (repeat (' ', (depth * indent)), ses);
     }
-    retValue := retValue || ']';
+          DB.DBA.JSON_SERIALIZE_INNER (ses, aref (o, inx), depth, indent);
   }
-  return retValue;
+      if (indent and inx)
+        {
+          http ('\n', ses);
+          http (repeat (' ', ((depth - 1) * indent)), ses);
+        }
+      http (']', ses);
+    }
+  return;
 }
 ;
 
@@ -1163,6 +1285,8 @@ create procedure DB.DBA.json2obj (
 --
 -- Object 2 XML functions
 --
+
+--!AWK PUBLIC
 create procedure DB.DBA.obj2xml (
   in o any,
   in d integer := 10,
@@ -1927,6 +2051,8 @@ create procedure VALIDATE.DBA.validate_ftext (
 {
   declare st, msg varchar;
 
+  if (not isstring (S) or not length (S))
+    return 0;
   st := '00000';
   exec ('vt_parse (?)', st, msg, vector (S));
   if ('00000' = st)
@@ -2105,3 +2231,332 @@ create procedure dpipe_drop (in n varchar)
 }
 ;
 
+
+
+create procedure RDF_DUMP_GRAPH
+  (IN  srcgraph           VARCHAR,
+   IN  out_file           VARCHAR,
+   IN  file_length_limit  INTEGER  := 1000000000)
+{
+  DECLARE  file_name VARCHAR;
+  DECLARE  env, ses ANY;
+  DECLARE  ses_len, max_ses_len, file_len, file_idx INTEGER;
+
+   SET ISOLATION = 'uncommitted';
+   max_ses_len  := 10000000;
+   file_len     := 0;
+   file_idx     := 1;
+   file_name    := sprintf ('%s%06d.ttl', out_file, file_idx);
+   string_to_file (file_name || '.graph', srcgraph, -2);
+   string_to_file (file_name, sprintf ( '# Dump of graph <%s>, as of %s\n@base <> .\n', srcgraph, CAST (NOW() AS VARCHAR)), -2);
+   env := vector (dict_new (16000), 0, '', '', '', 0, 0, 0, 0, 0);
+   ses := string_output ();
+   FOR (SELECT * FROM ( SPARQL DEFINE input:storage "" SELECT ?s ?p ?o { GRAPH `iri(?:srcgraph)` { ?s ?p ?o } } ) AS sub OPTION (LOOP)) DO
+      {
+        http_ttl_triple (env, "s", "p", "o", ses);
+        ses_len := length (ses);
+        IF (ses_len > max_ses_len)
+          {
+            file_len := file_len + ses_len;
+            IF (file_len > file_length_limit)
+              {
+                http (' .\n', ses);
+                string_to_file (file_name, ses, -1);
+		gz_compress_file (file_name, file_name||'.gz');
+		file_delete (file_name);
+                file_len := 0;
+                file_idx := file_idx + 1;
+                file_name := sprintf ('%s%06d.ttl', out_file, file_idx);
+                string_to_file (file_name, sprintf ( '# Dump of graph <%s>, as of %s (part %d)\n@base <> .\n',
+		      srcgraph, CAST (NOW() AS VARCHAR), file_idx), -2);
+                 env := VECTOR (dict_new (16000), 0, '', '', '', 0, 0, 0, 0, 0);
+              }
+            ELSE
+              string_to_file (file_name, ses, -1);
+            ses := string_output ();
+          }
+      }
+    IF (LENGTH (ses))
+      {
+        http (' .\n', ses);
+        string_to_file (file_name, ses, -1);
+	gz_compress_file (file_name, file_name||'.gz');
+	file_delete (file_name);
+      }
+}
+;
+
+create procedure RDF_DUMP_NQUADS
+   (IN  dir                VARCHAR := 'dumps',
+    IN  start_from         INT := 1,
+    IN  file_length_limit  INTEGER := 100000000,
+    IN  comp               INT := 1)
+{
+  DECLARE  inx, ses_len  INT;
+  DECLARE  file_name     VARCHAR;
+  DECLARE  env, ses      ANY;
+
+
+  inx := start_from;
+  SET isolation = 'uncommitted';
+  env := vector (0,0,0);
+  ses := string_output (10000000);
+  FOR (SELECT * FROM (sparql define input:storage "" SELECT ?s ?p ?o ?g { GRAPH ?g { ?s ?p ?o } . FILTER ( ?g != virtrdf: ) } ) AS sub OPTION (loop)) DO
+    {
+      DECLARE EXIT HANDLER FOR SQLSTATE '22023'
+	{
+	  GOTO next;
+	};
+      http_nquad (env, "s", "p", "o", "g", ses);
+      ses_len := LENGTH (ses);
+      IF (ses_len >= file_length_limit)
+	{
+	  file_name := sprintf ('%s/rdf-dump-%06d.nq', dir, inx);
+	  string_to_file (file_name, ses, -2);
+	  IF (comp)
+	    {
+	      gz_compress_file (file_name, file_name||'.gz');
+	      file_delete (file_name);
+	    }
+	  inx := inx + 1;
+	  env := vector (0,0,0);
+	  ses := string_output (10000000);
+	}
+      next:;
+    }
+  IF (length (ses))
+    {
+      file_name := sprintf ('%s/rdf-dump-%06d.nq', dir, inx);
+      string_to_file (file_name, ses, -2);
+      IF (comp)
+	{
+	  gz_compress_file (file_name, file_name||'.gz');
+	  file_delete (file_name);
+	}
+      inx := inx + 1;
+      env := vector (0,0,0);
+    }
+}
+;
+
+
+create procedure DB.DBA.RDF_DUMP_NQUADS_MT (
+    in  n_threads          int,
+    in  dir                varchar := 'dumps',
+    in  file_length_limit  integer := 100000000,
+    in  comp               int := 1,
+    in  fix                int := 1
+    )
+{
+  declare  inx  int;
+  declare graphs any;
+  declare len, n_per_slice int;
+  declare aq any;
+
+
+  graphs := (SELECT VECTOR_AGG ("G") FROM (SELECT DISTINCT G as "G" FROM RDF_QUAD TABLE OPTION (INDEX G, INDEX_ONLY)) dt);
+  len := length (graphs);
+
+  n_per_slice := (((len / n_threads) + mod (len, n_threads)) * n_threads) / n_threads;
+  aq := async_queue (n_threads, 4);
+
+  for (inx := 0; inx < n_threads; inx := inx + 1)
+    {
+      declare start_pos, end_pos int;
+      declare rng any;
+
+      start_pos := inx * n_per_slice;
+      end_pos := start_pos + n_per_slice;
+      rng := subseq (graphs, start_pos, end_pos);
+      aq_request (aq, 'DB.DBA.RDF_DUMP_NQUADS_THR', vector (rng, inx, dir, file_length_limit, comp, fix));
+    }
+  aq_wait_all (aq);
+}
+;
+
+create procedure DB.DBA.RDF_DUMP_NQUADS_THR (
+    in graphs any,
+    in thr_no int,
+    in dir varchar,
+    in file_length_limit int,
+    in comp int,
+    in fix int
+    )
+{
+  declare  inx, ses_len  int;
+  declare  file_name     varchar;
+  declare  env, ses      any;
+  declare message varchar;
+  declare nth, total, g_no bigint;
+  declare prev_g any;
+
+  log_message (sprintf ('[%02d] [%D] STARTED %d', thr_no, curutcdatetime(), length (graphs)));
+  inx := 1;
+  nth := 0;
+  g_no := 0;
+  total := length (graphs);
+  SET ISOLATION = 'uncommitted';
+  env := vector (0,0,0);
+  ses := string_output (10000000);
+  prev_g := '';
+  FOREACH (iri_id_8 g_iid in graphs) DO {
+  g_no := g_no + 1;
+  FOR SELECT __id2in ("S") AS "s", __id2in ("P") AS "p", __ro2sq ("O") AS "o", __id2in ("G") AS "g"
+      FROM DB.DBA.RDF_QUAD TABLE OPTION (INDEX G) WHERE "G" = g_iid OPTION (QUIETCAST, LOOP) DO
+    {
+      if (fix and "p" = 'http://www.opengis.net/ont/geosparql#asWKT')
+        "o" := null;
+      if ("o" is null)
+        "o" := __box_flags_tweak ('http://www.w3.org/1999/02/22-rdf-syntax-ns#nil', 1);
+      http_nquad (env, "s", "p", "o", "g", ses);
+      ses_len := LENGTH (ses);
+      nth := nth + 1;
+      if (ses_len >= file_length_limit and prev_g <> "g")
+	{
+          prev_g := "g";
+	  file_name := sprintf ('%s/rdf-dump-%02d-%06d.nq', dir, thr_no, inx);
+	  string_to_file (file_name, ses, -2);
+	  if (comp)
+	    {
+	      gz_compress_file (file_name, concat (file_name, '.gz'));
+	      file_delete (file_name);
+	    }
+          log_message (sprintf ('[%02d] [%D] Dump written %s', thr_no, curutcdatetime(), file_name));
+	  inx := inx + 1;
+	  env := vector (0,0,0);
+	  ses := string_output (10000000);
+	}
+      if (mod (nth, 500000) = 0)
+        {
+          log_message (sprintf ('[%02d] [%D] %d %d/%d %s', thr_no, curutcdatetime(), nth, g_no, total, "g"));
+        }
+    }
+  }
+  if (length (ses))
+    {
+      file_name := sprintf ('%s/rdf-dump-%02d-%06d.nq', dir, thr_no, inx);
+      string_to_file (file_name, ses, -2);
+      if (comp)
+	{
+	  gz_compress_file (file_name, concat (file_name,'.gz'));
+	  file_delete (file_name);
+	}
+      log_message (sprintf ('[%02d] [%D] Dump written %s', thr_no, curutcdatetime(), file_name));
+    }
+  log_message (sprintf ('[%02d] [%D] DONE %d', thr_no, curutcdatetime(), nth));
+}
+;
+
+
+--!AWK PUBLIC
+create procedure DB.DBA.REPL_GETDATE (in _src varchar := null, in _type integer := 0) returns datetime
+{
+  return cast (datestring_GMT(now()) as datetime);
+}
+;
+
+
+--
+-- Simple JSON -> Turtle translator
+--
+
+create function is_json_obj (in tree any)
+{
+  if (isvector (tree) and length (tree) >= 2 and __tag(tree[0]) = 255 and tree[1] = 'structure')
+    return 1;
+  return 0;
+}
+;
+
+create function is_json_node (in tree any)
+{
+  if (isvector (tree) and length (tree) = 2 and not is_json_obj (tree))
+    return 1;
+  return 0;
+}
+;
+
+create function is_json_array (in tree any)
+{
+  if (isvector (tree) and length (tree) > 0 and __tag (tree[0]) <> 255)
+    return 1;
+  return 0;
+}
+;
+
+create procedure json_print_node (inout ses any, in tree any, in ns varchar, in lvl int := 0)
+{
+  declare i, j, len, lenj int;
+
+  http (repeat ('  ', lvl), ses);
+  if (is_json_obj (tree))
+    tree := subseq (tree, 2);
+  len := length (tree);
+  for (i := 0; i < len; i := i + 2)
+   {
+     declare node, val any;
+     node := tree[i];
+     val := tree[i+1];
+     http (repeat ('  ', lvl), ses);
+     if (is_json_obj (val))
+       {
+         http (sprintf ('%s:%s [ \n', ns, node), ses);
+         json_print_node (ses, val, ns, lvl + 1);
+         http (' ]', ses);
+       }
+     else if (is_json_array (val))
+       {
+         http (sprintf ('%s:%s [ \n', ns, node), ses);
+         lenj := length (val);
+         for (j := 0; j < lenj; j := j + 1)
+          {
+            if (is_json_obj (val[j]) or is_json_array (val[j]))
+              {
+                http (sprintf ('rdf:_%d [ ', j), ses);
+                json_print_node (ses, val[j], ns, lvl + 1);
+                http ('] ', ses);
+              }
+            else
+              {
+                http (sprintf ('rdf:_%d ', j), ses);
+                http_nt_object (val[j], ses);
+              }
+            if (j < lenj - 1)
+              http ('; \n', ses);
+          }
+         http (' ]', ses);
+       }
+     else
+       {
+         -- TTL fck the long int
+         --declare env any;
+         --env := vector (dict_new (10), 0, '', '', '', 0, 0, 0, 0, ses);
+         if (isvector (val) and length (val) = 0)
+           http (sprintf ('%s:%s rdf:nil', ns, node), ses);
+         else
+           {
+             http (sprintf ('%s:%s ', ns, node), ses);
+             http_nt_object (val, ses);
+             --http_ttl_value (env, val, 2, ses);
+           }
+       }
+     if (i < len - 2)
+       http (';\n', ses);
+   }
+}
+;
+
+create procedure json_to_turtle (in content varchar, in ns varchar := '', in ns_url varchar := '#')
+{
+  declare tree, ses any;
+  tree := json_parse (content);
+  ses := string_output ();
+  http ('@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> . \n', ses);
+  http ('@prefix xsd: <http://www.w3.org/2001/XMLSchema#> . \n', ses);
+  http (sprintf ('@prefix %s: <%s> . \n\n', ns, ns_url), ses);
+  http ('[] ', ses);
+  json_print_node (ses, tree, ns);
+  http ('. \n', ses);
+  return string_output_string (ses);
+}
+;

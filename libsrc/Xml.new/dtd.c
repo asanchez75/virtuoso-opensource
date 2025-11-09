@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -498,7 +498,7 @@ char* get_encoded_name (vxml_parser_t* parser, unichar* beg, unichar* end,
 #endif /* DEBUG */
 
 struct xhtml_ent_s { const char *entity; int encoded_symbol; const char *descr;};
-extern const struct xhtml_ent_s * xhtml_ent_gperf (register const char *str, register unsigned int len);
+extern const struct xhtml_ent_s * xhtml_ent_gperf (register const char *str, register size_t len);
 
 unichar
 dtd_char_ref (vxml_parser_t* parser, char* str, size_t sz)
@@ -816,7 +816,7 @@ int get_include (vxml_parser_t *parser, const char *base, const char *ref, lenme
       res_text->lm_length = cached_text->lm_length;
       res_pos->line_num = res_pos->col_b_num = res_pos->col_c_num = 1;
       res_pos->origin_ent = NULL;
-      key_ptr = id_hash_get_key_by_place (parser->includes, cached_text_ptr);
+      key_ptr = id_hash_get_key_by_place (parser->includes, (caddr_t) cached_text_ptr);
       res_pos->origin_uri = ((caddr_t *)key_ptr)[0];
       dk_free_box (path);
       return 1;

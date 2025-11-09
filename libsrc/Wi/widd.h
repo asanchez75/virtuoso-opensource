@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -72,7 +72,7 @@ struct dbe_schema_s
     dk_hash_t *		sc_id_to_key;
     dk_hash_t *		sc_key_subkey;
     dk_hash_t *		sc_id_to_col;
-    long		sc_free_since; /* msec real time when became unreferenced*/
+    time_msec_t		sc_free_since; /* msec real time when became unreferenced*/
     dk_hash_t *		sc_id_to_type;
 #if defined (PURIFY) || defined (VALGRIND)
     dk_set_t		sc_old_views;
@@ -101,6 +101,24 @@ extern dk_mutex_t * db_schema_mtx; /* global schema hash tables */
 	  ((op) == 'U' ? TB_RLS_U : \
 	   ((op) == 'D' ? TB_RLS_D : GPF_T1 ("invalid op")))))
 
+
+typedef struct csv_parser_config_s
+{
+  char		cpc_field_delim;
+  char		cpc_hex_escape;
+  char		cpc_plain_escape;
+  char		cpc_newline1;
+  char		cpc_newline2;
+  char		cpc_quote;
+  char		cpc_trim_whitespaces;
+  char		cpc_null_empty_string;
+  char		cpc_allow_multiline_string;
+  char		cpc_cast_error;
+  char		cpc_error_if_no_file;
+  int		cpc_skip_rows_at_first;
+  int		cpc_skip_rows_at_rest;
+  int		cpc_mode;
+} csv_parser_config_t;
 
 struct dbe_table_s
   {
@@ -533,7 +551,7 @@ fragment instead of searching for the the fragment actually needed. */
 #define ITC_MARK_LOCK_WAIT(it, t) \
 { \
   dbe_key_t *k1 = it->itc_insert_key; \
-  uint32 delay = get_msec_real_time () - t; \
+  uint32 delay = (uint32) (get_msec_real_time () - t); \
   if (k1) \
     { \
       k1->key_lock_wait++; \

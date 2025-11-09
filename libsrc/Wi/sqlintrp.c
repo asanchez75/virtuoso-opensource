@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -166,6 +166,11 @@ ins_call_kwds (caddr_t * qst, query_t * proc, instruction_t * ins, caddr_t * par
 		}
 	      if (SSL_REF == actual_ssl->ssl_type)
 		row = sslr_set_no (qst, actual_ssl, row);
+              if (row >= dc->dc_n_values)
+                {
+                  err = srv_make_new_error ("42000", "VEC09", "In vectored code calling with unset input");
+                  goto err_end;
+                }
 	      address = (caddr_t)&((caddr_t*)dc->dc_values)[row];
 	    }
 	  else if ((!ins->_.call.ret || !IS_REAL_SSL (ins->_.call.ret) || !ins->_.call.ret->ssl_is_observer) &&
@@ -420,7 +425,7 @@ ins_call (instruction_t * ins, caddr_t * qst, code_vec_t code_vec)
       sql_method_t *mtd = NULL;
       ptrlong mtd_inx = -1;
       if (BOX_ELEMENTS (proc_name) != 2 || !DV_STRINGP (proc_mtd_call[0]) ||
-	  !DV_LONG_INT == DV_TYPE_OF (proc_mtd_call[1]))
+         DV_LONG_INT != DV_TYPE_OF (proc_mtd_call[1]))
 	{
 	  err = srv_make_new_error ("22023", "UD004", "Invalid proc_name array supplied");
 	  goto report_error;
@@ -866,7 +871,7 @@ ins_call_vec (instruction_t * ins, caddr_t * inst, code_vec_t code_vec, int firs
   {
     caddr_t * rets = NULL;
     int set;
-    db_buf_t set_mask = qi->qi_set_mask;
+    db_buf_t set_mask = CV_CALL_PROC_TABLE != ins->_.call.ret ? qi->qi_set_mask : NULL;
     if (CALLER_CLIENT == qi->qi_caller && !ins->_.call.ret && !qi->qi_query->qr_select_node)
       rets = dk_alloc_box_zero (sizeof (caddr_t) * n_sets, DV_ARRAY_OF_POINTER);
     SET_LOOP
@@ -877,7 +882,7 @@ ins_call_vec (instruction_t * ins, caddr_t * inst, code_vec_t code_vec, int firs
 	  rets[set] = qi->qi_proc_ret;
       }
     END_SET_LOOP;
-    qi->qi_proc_ret = rets;
+    qi->qi_proc_ret = (caddr_t) rets;
   }
 }
 
@@ -1268,7 +1273,7 @@ ins_subq (instruction_t * ins, caddr_t * qst)
   int n_sets_save = qi->qi_n_sets;
   db_buf_t sm_save = qi->qi_set_mask;
   client_connection_t * cli = qi->qi_client;
-  int at_start = cli->cli_anytime_started;
+  time_msec_t at_start = cli->cli_anytime_started;
   if (!ins->_.subq.query->qr_select_node)
     cli->cli_anytime_started = 0;
   qi->qi_n_affected = 0;
@@ -1331,11 +1336,12 @@ ins_open (instruction_t * ins, caddr_t * qst)
   qst_set (qst, ins->_.open.cursor, (caddr_t) CR_INITIAL);
 }
 
-
+#if defined(DEBUG) | defined(MTX_DEBUG) | defined(PAGE_DEBUG)
 void
-bing ()
+bing (void)
 {
 }
+#endif
 
 
 #define AC_ENLIST_CK(qi)
@@ -1609,7 +1615,7 @@ opt_set_pop (opt_set_t *set)
 
 #ifdef OPT_SET_DEBUG
 static int
-opt_set_test ()
+opt_set_test (void)
 {
   ptrlong inx;
   opt_set_t test_set;
@@ -1845,8 +1851,8 @@ ins_qnode (instruction_t * ins, caddr_t * qst, int from_vec)
 {
   query_instance_t * qi = (query_instance_t *) qst;
   client_connection_t * cli = qi->qi_client;
-  int at_start = cli->cli_anytime_started;
-  int at_to = cli->cli_anytime_timeout;
+  time_msec_t at_start = cli->cli_anytime_started;
+  uint32 at_to = cli->cli_anytime_timeout;
   cli->cli_anytime_started = 0;
   QR_RESET_CTX_T (qi->qi_thread)
     {
@@ -1968,7 +1974,7 @@ ins_for_vect (caddr_t * inst, instruction_t * ins)
 	sqlr_new_error ("42000", "VEC..", "Input arrays  in for_vectored not of equal length");
       dc_reset (dc);
       if (len > dc_max_batch_sz)
-	sqlr_new_error ("42000", "FRVEC",  "array in for vectored over max vector length %d > %d", len, dc_max_batch_sz);
+        sqlr_new_error ("42000", "FRVEC", "Input array FOR VECTORED over max vector length %d > %d", len, dc_max_batch_sz);
       if (ins->_.for_vect.modify && (DCT_BOXES & dc->dc_type))
 	{
 	  int len = BOX_ELEMENTS (arr);
@@ -2239,8 +2245,8 @@ qi_check_trx_error (query_instance_t * qi, int flags)
       sqlr_resignal (err);
     }
 
-  if (cli->cli_start_time &&
-      time_now_msec - cli->cli_start_time > BURST_STOP_TIMEOUT
+  if (cli->cli_start_time_usec &&
+      time_now_msec - (cli->cli_start_time_usec / 1000UL) > BURST_STOP_TIMEOUT
       && cli->cli_session
       && cli_is_interactive (cli)
       && !cli->cli_ws)
@@ -2719,7 +2725,7 @@ again:
 
 
 caddr_t
-code_vec_run_no_catch (code_vec_t code_vec, it_cursor_t *itc)
+code_vec_run_no_catch (code_vec_t code_vec, it_cursor_t *itc, int flag)
 {
   instruction_t * ins = code_vec;
   caddr_t *qst = itc->itc_out_state;
@@ -2728,6 +2734,24 @@ code_vec_run_no_catch (code_vec_t code_vec, it_cursor_t *itc)
     cli_anytime_timeout (qi->qi_client);
   for (;;)
     {
+      switch (ins->ins_type)
+	{
+	case IN_ARTM_PLUS:
+	case IN_ARTM_MINUS:
+	case IN_ARTM_TIMES:
+	case IN_ARTM_DIV:
+	case IN_ARTM_IDENTITY:
+	  if (flag == CV_THIS_SET_ONLY && qi->qi_query->qr_proc_vectored)
+	    {
+	      data_col_t *dc = QST_BOX (data_col_t *, qst, ins->_.artm.result->ssl_index);
+              if (dc->dc_any_null)
+                dc_ensure_null_bits (dc);
+	      DC_CLR_NULL (dc, qi->qi_set);
+	      break;
+	    }
+	default:
+	  break;
+	}
       switch (ins->ins_type)
 	{
 	case IN_ARTM_PLUS:	HANDLE_ARTM(box_add);
@@ -3215,6 +3239,7 @@ ins_vec_agg (instruction_t * ins, caddr_t * inst)
 	  itc_ha_feed_ret_t ihfr;
 	  if (DVC_MATCH == itc_ha_feed (&ihfr, ins->_.agg.distinct, inst, 0, NULL))
 	    continue;
+          arg = qst_get (inst, ins->_.agg.arg); /* take argument here as itc_ha_feed mangle the place if serialized any */
 	}
       op = ins->_.agg.op;
       qi->qi_set = set_no;

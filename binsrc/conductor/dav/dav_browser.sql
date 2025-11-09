@@ -2,7 +2,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -964,6 +964,9 @@ create procedure WEBDAV.DBA.utf2wide (
 {
   declare retValue any;
 
+  if (isbinary (S))
+    S := cast (S as varchar);
+
   if (isstring (S))
   {
     retValue := charset_recode (S, 'UTF-8', '_WIDE_');
@@ -980,6 +983,9 @@ create procedure WEBDAV.DBA.wide2utf (
   in S any)
 {
   declare retValue any;
+
+  if (isbinary (S))
+    S := cast (S as varchar);
 
   if (iswidestring (S))
   {
@@ -1032,21 +1038,14 @@ create procedure WEBDAV.DBA.path_escape (
   in path varchar,
   in delimiter varchar := '/')
 {
-  declare parts any;
-  declare retValue varchar;
-
+  declare ses any;
   if (DB.DBA.is_empty_or_null (path))
     return path;
-
-  retValue := '';
-  parts := split_and_decode (path, 0, '\0\0' || delimiter);
-  foreach (varchar part in parts) do
-  {
-    retValue := retValue || case when (part = '') then '/' else sprintf ('%U/', part) end;
-  }
-  retValue := subseq (retValue, 0, length(retValue)-1);
-
-  return retValue;
+  ses := string_output ();
+  if (isstring (path))
+    __box_flags_set (path, 2);
+  http_dav_url (path, null, ses);
+  return string_output_string (ses);
 }
 ;
 
@@ -1912,7 +1911,7 @@ create procedure WEBDAV.DBA.host_url (
   }
   else
   {
-    host := cfg_item_value (virtuoso_ini_path (), 'URIQA', 'DefaultHost');
+    host := virtuoso_ini_item_value ('URIQA', 'DefaultHost');
     if (host is null)
     {
       host := sys_stat ('st_host_name');
@@ -2428,7 +2427,7 @@ create procedure WEBDAV.DBA.settings (
   declare retValue, V any;
 
   V := vector ();
-  if (account_id <> http_nobody_uid ())
+  if (account_id <> http_nobody_uid () and table_exists ('ODRIVE.WA.SETTINGS'))
   {
     retValue := WEBDAV.DBA.exec ('select USER_SETTINGS from ODRIVE.WA.SETTINGS where USER_ID = ?', vector (account_id));
     if ((length (retValue) = 1) and not isnull (retValue[0][0]))
@@ -2444,7 +2443,7 @@ create procedure WEBDAV.DBA.settings_save (
   in account_id integer,
   in settings any)
 {
-  if (account_id = http_nobody_uid ())
+  if (account_id = http_nobody_uid () or 0 = table_exists ('ODRIVE.WA.SETTINGS'))
     return;
 
   WEBDAV.DBA.exec ('insert replacing ODRIVE.WA.SETTINGS (USER_ID, USER_SETTINGS) values (?, serialize (?))', vector (account_id, settings));
@@ -2525,7 +2524,7 @@ create procedure WEBDAV.DBA.settings_tbLabels (
 create procedure WEBDAV.DBA.settings_hiddens (
   inout settings any)
 {
-  return get_keyword ('hiddens', settings, '.,_');
+  return get_keyword ('hiddens', settings, '.');
 }
 ;
 
@@ -2701,6 +2700,7 @@ create procedure WEBDAV.DBA.det_type_name (
     'Box',        'Box Net',
     'WebDAV',     'WebDAV',
     'RACKSPACE',  'Rackspace Cloud',
+    'AZURE',      'Azure Storage Account',
     'nntp',       'Discussion',
     'CardDAV',    'CardDAV',
     'Blog',       'Blog',
@@ -2882,7 +2882,8 @@ create procedure WEBDAV.DBA.det_api_key (
   in name varchar)
 {
   declare retValue any;
-
+  if (not table_exists ('OAUTH.DBA.APP_REG'))
+    return null;
   retValue := WEBDAV.DBA.exec ('select a_key from OAUTH..APP_REG where WEBDAV.DBA.service_name (a_name) = WEBDAV.DBA.service_name (?) and a_owner = 0', vector (name));
   if (WEBDAV.DBA.isVector (retValue) and length (retValue))
     return retValue[0][0];
@@ -3291,6 +3292,8 @@ create procedure WEBDAV.DBA.DAV_PERROR (
     S := replace (S, 'Resource', 'File');
     S := subseq (S, 6);
   }
+  if (-44 = x and isstring (connection_get('__sql_message')))
+    S := connection_get('__sql_message');
   return S;
 }
 ;
@@ -3812,7 +3815,7 @@ create procedure WEBDAV.DBA.rdfSink_CONFIGURE (
 
   oldParams := DB.DBA.DAV_DET_RDF_PARAMS_GET ('rdfSink', id);
   DB.DBA.DAV_DET_PARAM_SET ('rdfSink', null, id, 'C', 'activity', get_keyword ('activity', params, 'off'), 0);
-  retValue := DB.DBA.DAV_DET_RDF_PARAMS_SET ('rdfSink', id, params, vector ('sponger', 'cartridges', 'metaCartridges', 'base', 'graph', 'contentType', 'graphSecurity', 'graphSecurityACL', 'graphSecurityACI'));
+  retValue := DB.DBA.DAV_DET_RDF_PARAMS_SET ('rdfSink', id, params, vector ('sponger', 'cartridges', 'metaCartridges', 'base', 'graph', 'contentType', 'graphSecurity', 'graphSecurityACL', 'graphSecurityACI', 'validator'));
   oldGraph := get_keyword ('graph', oldParams, '');
   if (oldGraph <> '')
   {
@@ -4633,7 +4636,7 @@ create procedure WEBDAV.DBA.send_mail_internal (
   declare _message varchar;
   declare _smtp_server any;
 
-  _smtp_server := cfg_item_value (virtuoso_ini_path (), 'HTTPServer', 'DefaultMailServer');
+  _smtp_server := virtuoso_ini_item_value ('HTTPServer', 'DefaultMailServer');
   if (_smtp_server = 0)
     return;
 
@@ -4848,7 +4851,7 @@ create procedure WEBDAV.DBA.aci_load (
   what := WEBDAV.DBA.path_type (path);
   id := DB.DBA.DAV_SEARCH_ID (path, what);
   DB.DBA.DAV_AUTHENTICATE_SSL_ITEM (id, what, path);
-  if (isarray (id) and (cast (id[0] as varchar) not in ('DynaRes', 'IMAP', 'Share', 'S3', 'GDrive', 'Dropbox', 'SkyDrive', 'Box', 'WebDAV', 'RACKSPACE', 'LDP')))
+  if (isarray (id) and (cast (id[0] as varchar) not in ('DynaRes', 'IMAP', 'Share', 'S3', 'GDrive', 'Dropbox', 'SkyDrive', 'Box', 'WebDAV', 'RACKSPACE', 'LDP', 'AZURE')))
   {
     retValue := WEBDAV.DBA.DAV_PROP_GET (path, 'virt:aci_meta', auth_name=>auth_name, auth_pwd=>auth_pwd);
     if (WEBDAV.DBA.DAV_ERROR (retValue))
@@ -4986,7 +4989,7 @@ create procedure WEBDAV.DBA.aci_save (
 
   what := WEBDAV.DBA.path_type (path);
   id := DB.DBA.DAV_SEARCH_ID (path, what);
-  if (isarray (id) and (cast (id[0] as varchar) not in ('DynaRes', 'IMAP', 'S3', 'GDrive', 'Dropbox', 'SkyDrive', 'Box', 'WebDAV', 'RACKSPACE', 'LDP')))
+  if (isarray (id) and (cast (id[0] as varchar) not in ('DynaRes', 'IMAP', 'S3', 'GDrive', 'Dropbox', 'SkyDrive', 'Box', 'WebDAV', 'RACKSPACE', 'LDP', 'AZURE')))
   {
     retValue := WEBDAV.DBA.DAV_PROP_SET (path, 'virt:aci_meta', aci, auth_name=>auth_name, auth_pwd=>auth_pwd);
   }
@@ -5350,7 +5353,7 @@ create procedure WEBDAV.DBA.ssl2iri (
 
   if (iri not like 'http://%')
   {
-    noSsl := cfg_item_value (virtuoso_ini_path (), 'URIQA', 'DefaultHost');
+    noSsl := virtuoso_ini_item_value ('URIQA', 'DefaultHost');
     if (noSsl is not null)
     {
       V := rfc1808_parse_uri (iri);
@@ -5646,6 +5649,8 @@ create procedure WEBDAV.DBA.oauth_exist ()
 {
   declare retValue any;
 
+  if (not table_exists ('OAUTH.DBA.APP_REG'))
+    return 0;
   retValue := WEBDAV.DBA.exec ('select TOP 1 1 from OAUTH.DBA.APP_REG where A_TYPE = 1');
   if (WEBDAV.DBA.isVector (retValue) and (length (retValue) = 1))
     return 1;
@@ -5661,6 +5666,8 @@ create procedure WEBDAV.DBA.oauth_list ()
   declare retValue, items, tmp any;
 
   retValue := vector ();
+  if (not table_exists ('OAUTH..APP_REG'))
+    return retValue;
   items := WEBDAV.DBA.exec ('select A_NAME, A_DESCR from OAUTH.DBA.APP_REG where A_TYPE = 1 order by A_NAME');
   foreach (any item in items) do
   {

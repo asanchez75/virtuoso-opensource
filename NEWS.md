@@ -1,31 +1,865 @@
-NEWS
-====
+# NEWS
 
-October 2, 2018, v7.2.6-dev:
-----------------------------
+## Oct 14, 2025, v7.2.16
+  * Virtuoso Engine
+    - Added disk space monitor
+    - Added event logger with rate limiting on frequently repeated errors
+    - Added more informative locking information to `status()` output
+    - Added support for TLS connection timeout for ODBC and HTTP
+    - Fixed issue with compiling on Windows
+    - Fixed some defaults in `virtuoso.ini`
+    - Fixed check for upper MP limit increment in optimizer
+    - Fixed error reporting on non-compatible database/setup
+    - Fixed issue comparing dates
+    - Fixed issue hanging in temp table
+    - Fixed issues with JSON serializer
+    - Fixed issues with `PAGE_DEBUG`
+    - Fixed issues with `sqlc_hook`
+    - Fixed issue when usernames are repeated
+    - Fixed issue where Virtuoso mistakenly reports that ID:0 (dba) has no permissions
+    - Fixed issue with JSON parsing unknown band with many types
+    - Fixed issue with max memory pool size greater than 4GB
+    - Fixed issue with `xsd:time` conversion
+    - Fixed to not re-enter mutex when resetting iterator
+
+  * SPARQL
+    - Added assert to check if the memory pool is busy
+    - Fixed RDF Views total count statistics
+    - Fixed issue trying to call CXML PL when the VAD package is not installed
+    - Fixed issue where Virtuoso mistakenly reports that ID:0 (dba) has no permissions
+    - Fixed so numbers and dates preserve datatypes in JSON output
+    - Fixed issue with table name qualifiers in case mode 2
+    - Fixed issue when performing a `same-as` query without specifying a graph
+    - Fixed to prevent call to parse if timeout is already reached
+    - Fixed to preserve datatypes for numbers and dates in JSON output
+    - Fixed handling when cast is unknown; do not point to datatype in JSON output
+    - Fixed to check for DBA group instead of DBA user
+    - Fixed issue with queries without indexes
+    - Fixed to replace typed-literal with literal in JSON output
+    - Fixed issue trying to perform LDP on `/sparql` endpoints
+
+  * Web Server and DAV
+    - Added a global to stop SSE client from receiving more data
+    - Added missing HTTP status codes
+    - Added support for DAV content callback function
+    - Added RDF sink folder validation option
+    - Added handling of the DAV property as RSS/Atom feed title
+    - Added missing `<guid>` to directories/collections
+    - Added `DAV_QUEUE_MAX_THREADS` registry to set upper limit
+    - Added feed-type files in OPML output
+    - Fixed issues with broken SSE implementations
+    - Fixed issues running DAV RSS/Atom/OPML feeds behind a proxy
+    - Fixed RSS feed version
+    - Fixed feed titles
+    - Fixed exclusion of hidden files and folders
+    - Fixed issues with Atom and OPML publication
+    - Fixed issue resolving user names
+    - Fixed encoding issues
+    - Fixed issue with encoding `&nbsp;`
+    - Fixed issues with LDP
+    - Fixed print DAV IDs in debug mode
+
+  * Faceted Browser
+    - Added option to prevent bots from crawling `/fct/rdfdesc/usage.vsp`
+    - Added config UI setting to change the maximum amount of facets (default 20)
+    - Improved performance when using `same-as` for a label
+    - Changed `output:valmode` from "AUTO" to "LONG"
+    - Fixed issue with CXML link at the bottom of the page
+    - Fixed issue with zero triples on secondary storage
+
+  * Conductor
+    - Fixed issue storing ACME-related keys
+    - Fixed issue with the size of the select list for user names
+    - Fixed save and restore of connection variables on VAD installation
+
+## May 21, 2025, v7.2.15
+  * Virtuoso Engine
+    - Fixed compiler warnings on misleading indentation
+    - Fixed compiler warnings for empty body
+    - Fixed prototypes and declarations for functions without arguments
+    - Fixed issues reported by GCC 15 compiler
+    - Fixed issue in `SQLPrepare` and `SQLPrepareW`
+    - Fixed issue with `_cvt(vector(219), '1')`
+    - Fixed check for OpenSSL 3.5.0
+
+  * SPARQL
+    - Added support for RDF4j version 5.x
+    - Fixed issues with RDFviews
+    - Fixed maximum length of a long url to 64K
+    - Fixed issue that stopped engine from performing graph-scoped rules check
+    - Fixed when qlog is enabled, print rset should save prot table globals
+    - Fixed issue with `sparql insert <s> <p> 'o'`
+    - Fixed issue with sub properties in inference result
+    - Fixed issue with filter not working on inference result
+    - Fixed crash in optimiser when pred is optimised to always be true
+    - Fixed when inserting into `RDF_DATATYPE` or `RDF_LANGUAGE`, lock the row exclusive
+    - Fixed missing check for default `LIMIT` in SPARQL query
+
+  * Web Server and DAV
+    - Fixed issue with grants in web services
+
+  * Faceted Browser
+    - Added option to prevent bots from crawling `/describe`
+    - Fixed styling of bot prevention dialog
+    - Fixed if `get:*` and no permissions set, return 401 to redirect to login
+    - Fixed if account does not have read/view permission, return empty page as for 404
+
+  * Conductor
+    - Added support for ACME multi domain name orders
+    - Added ZeroSSL options to ACME UI
+    - Added ACME EAB support
+    - Fixed label to RDF Views
+    - Fixed issue with DAV RDF docs redirect option settings
+    - Fixed issues with RDFview
+    - Fixed issue with too many users in dropdown list
+    - Fixed clear graph before RML import in Conductor
+
+  * R2RML
+    - Fixed issue with empty `tgt_graph`
+
+  * GraphQL
+    - Fixed issue with rdfviews and GraphQL
+    - Fixed missing argument to `_connect` function in plugin
+
+
+## November 11, 2024, v7.2.14
+  * Virtuoso Engine
+    - Added new `MaxTempDBPages` setting to `virtuoso.ini`
+    - Fixed issue when out of disk space on temp db
+    - Fixed `int32` overflow when `dbs_file_length` is unknown
+    - Fixed memory leak in X509 cert chain
+    - Fixed compiler errors from `-Werror=incompatible-pointer-types` (fixes #1312)
+    - Fixed compiler errors from `-Werror=logical-not-parentheses`
+    - Fixed compiler errors from `-Werror=multistatement-macros`
+    - Fixed issue with user defined types (UDT)
+    - Fixed issue when there are no parts to split
+    - Fixed issue with `GROUP BY`/`ORDER BY` on `LEFT OUTER JOIN`
+    - Fixed issue calling `concat(wide, utf8)` (fixes #944)
+    - Fixed issue with length calculation in `rdf_encode_for_uri()`
+
+  * SPARQL
+    - Added support for (a relatively small number of) blank nodes in SPARQL `INSERT DATA` (fixes #126)
+    - Fixed missing `DB.DBA.SPARQL_BINDINGS_VIEW_C_0` for empty solution bindings
+    - Fixed arbitrary XML with CDATA having html tags has MIME re-placed with `text/html`
+    - Fixed issue when there are no more inits to skip
+    - Fixed key estimate on single only
+    - Fixed inc. estimate on transitive with unbound input
+
+  * Web Server and DAV
+    - Added support to handle websocket 101 connection upgrade in `http_client`
+    - Added flag to see if connection session is server or client
+    - Added `WSOCK.DBA.WEBSOCKET_CONNECT()` for client operations
+    - Added `PUT` and `DELETE` HTTP methods
+    - Added support for custom `%T` and `%D` HTTP log format
+    - Added flag to encode if API used as websocket client
+    - Fixed issue with `"Content-Encoding: gzip"` (fixes #1308)
+    - Fixed issue DAV escape; href should escape apos
+    - Fixed order of checking SOAP options and parameters
+    - Fixed allow `soap_boolean` to accept null for nullable arguments
+    - Fixed check which options are handled by endpoint
+    - Fixed check defines on rest method for additional http methods allowed
+    - Fixed issue with JSON registered REST services
+    - Fixed memory leak and error when service sets error status code
+    - Fixed missing SOAP procedure should return 404 'Not Found'
+    - Fixed missing encode flag
+
+  * Faceted Browser
+    - Added support for `WKT` rendition
+    - Changed `DOCTYPE` from `XHTML` to `HTML5`
+    - Removed `<base>` tag
+    - Removed deprecated charset on stylesheet links
+    - Removed link to W3C XHTML validator
+    - Removed support for `AddThis`
+    - Moved javascript to the end of the page
+    - Fixed recommendations from Lighthouse accessibility check
+    - Fixed issue with page selector on mobile devices
+    - Fixed make `iframe` content resizable
+
+  * Conductor
+    - Fixed issue when filename starts with underscore
+    - Fixed typo in generation of Transient view urls
+    - Fixed issue with RSS menu not working on Firefox
+    - Fixed issue with SN DETs errors
+
+  * R2RML
+    - Fixed issue with `{col}`
+
+  * GraphQL
+    - Fixed issue with generated names longer than 100 characters
+
+## June 10, 2024, v7.2.13:
+  * Virtuoso Engine
+	- Added safe `logical_*` bif names
+	- Fixed issues with `clang` 15 and newer compilers
+	- Fixed issues reported by link time optimizer (LTO)
+	- Fixed 'Read/Write wait on column page...' should be debug messages
+	- Fixed various missing BIF functions argument checks
+	- Fixed issue with cube/rollup 
+	- Fixed issue with bad date/time arithmetics
+	- Fixed issue getting client status during swapping or www maintenance
+	- Fixed issue collecting freetext stats during checkpoint
+	- Fixed issue on rehash if `dict_put` is used in select list
+	- Fixed issue with `MaxMemPoolSize`
+	- Fixed put MD5 context on connection global (fixes #1287)
+	- Fixed issue with hash in `group by` (fixes #1285)
+	- Fixed missing sz check (fixes #1283)
+	- Fixed length calculation in `REPEAT` (fixes #1282)
+	- Fixed offset overflow (fixes #1281)
+	- Fixed issue trying to normalize an invalid numeric (fixes #1279)
+	- Fixed unfolded bifs have to have serial to distinguish separate calls (fixes #1276)
+	- Fixed 64-bit arith overflow (fixes #1270)
+	- Fixed missing check for star (fixes #1269)
+	- Fixed set dc type on grouping sets (Fixed #1268)
+	- Fixed check num cols in union branches when subq non-terminal is used (fixes #1267)
+	- Fixed check for control exp over non-terminal not-allowed/can't be handled (fixes #1266)
+	- Fixed ft exp & similar not allowed in control exp (fixes #1265)
+	- Fixed negative column offset (fixes #1264)
+	- Fixed test for comma exp not allowed in arith exp (fixes #1263)
+	- Fixed cost on void geo function (fixes #1262)
+	- Fixed memcopy buffer overflow (fixes #1259)
+	- Fixed missing stack overflow check (fixes #1258)
+	- Fixed alloc double dep on demand as as int (fixes #1257)
+	- Fixed vec input should be declared as boxed, i.e., array (fixes #1254)
+	- Fixed ambiguous subq return (fixes #1253)
+	- Fixed issue with non-string copy (fixes #1252)
+	- Fixed missing check for const in predicate (fixed #1251)
+	- Fixed const in predicate can be removed by optimiser (fixed #1250)
+	- Fixed issue on any ssl w/h nulls (fixes #1249)
+	- Fixed issue with bad index op ref in table dft (fixes #1245)
+	- Fixed small issues with `sql_to_c.awk` script (fixes #1244)
+	- Fixed issue with `join` and `order by` on null result (fixes #1241)
+	- Fixed issue freeing n-way nic arrays
+	- Fixed issue building Windows binaries
+	- Fixed memory leak
+
+  * SPARQL
+	- Fixed missing checks for service and query arguments
+	- Fixed TSV output to use SPARQL 1.1 TSV specification
+	- Fixed issue importing bad IRI pattern
+	- Fixed issues with microdata parser
+	- Fixed geometry objects must be represented as strings (fixes #1274)
+
+  * Web Server and DAV
+    - Fixed issue reading large chunked data in SSE client
+    - Fixed issue with transaction boundary in DAV
+    - Fixed issue with stack var clobbered by setjump/longjump
+
+  * Faceted Browser
+	- Upgraded FCT build process to use vadpacker
+	- Fixed namespace of inference rules graphs
+	- Removed deprecated scripts
+
+  * Conductor
+    - Upgraded Conductor build process to use vadpacker
+    - Added optional alternative names for server X.509 certificate
+    - Fixed missing check for optional table
+    - Fixed issue when initialization of snapshot fails
+    - Fixed issue with wrong vad file path during vad install
+    - Fixed save CORS via WS wizard duplicate cors options
+    - Fixed preserve qualifier when updating trigger
+    - Fixed missing condition for sponger settings
+    - Fixed constrain site-name field to non-space characters only
+
+  * R2RML
+	- Upgraded RDB2RDF build process to use vadpacker
+	- Fixed issue calculating hash when target graph is null
+
+
+## February 13, 2024, v7.2.12:
 
   * Virtuoso Engine
-    - Added new plugins proj4, geos and shapefileio for GeoSPARQL
+    - Added JSON-LD parser mode for handling blank nodes
+    - Added serialization support for missing datatypes in `obj2json`
+    - Added statistics and setting to limit mem pool for chash
+    - Added support for dumping `XML` and `varbinary` data in JSON
+    - Added support for fetching `attributes` and `attributes_info` on user defined types
+    - Added `create user .. with password` and `identified by` syntax
+    - Added uptime, virtual memory size, and page faults to `status()` output
+    - Updated CSV functionality
+    - Fixed NaN behaviour in `cmp_double` same as ordering (fixes #1213)
+    - Fixed check constraint cannot use `CONTAINS` text predicate (fixes #1177)
+    - Fixed check for date/time/datetime/timestamp datatypes (fixes #1206)
+    - Fixed check for table def (fixes #1212)
+    - Fixed check if prev has a key (fixes #1216)
+    - Fixed check number of arguments to geo contains (fixes #1209)
+    - Fixed check values before copying invalid data (fixes #1208)
+    - Fixed get argument before place gets mangled when serializing `ANY` (fixes #1174)
+    - Fixed issue getting lock information for `status()`
+    - Fixed issue mixing numeric and int boxes in expression (fixes #1194, #1198)
+    - Fixed issue mixing vectored and non vectored ops (fixes #1184)
+    - Fixed issue on cube/rollup with constant in `select` list (fixes #1195, #1197)
+    - Fixed issue `right outer join` with constant false (fixes #1214)
+    - Fixed issue skipping sort node on outer as hash join may put right side at top
+    - Fixed issue when hash source is not available (fixes #1193)
+    - Fixed issue with `TOP 1` on a cursor
+    - Fixed issue with `TOP` not working when `DISTINCT` is used (fixes #1158)
+    - Fixed issue with all const in group (fixes #1204)
+    - Fixed issue with bad index op ref in table dft (fixes #1190, #1191)
+    - Fixed issue with freetext index; missing check if term is mergeable
+    - Fixed issue with function inside control expression
+    - Fixed issue with missing cast on return type (fixes #1172)
+    - Fixed issue with outer hash build (fixes #1185)
+    - Fixed issue with outer hash join with `GROUP BY` via hash source
+    - Fixed issue with `printf` style functions not using explicit format string (fixes #1199)
+    - Fixed issue with scalar subq (fixes #1183)
+    - Fixed issue with `select (select ... union ...)` or similar expressions
+    - Fixed issue with setting type before col assign function (fixes #1178)
+    - Fixed issue with sql fragment that has div operation
+    - Fixed issue with status for non `dba` user
+    - Fixed issue with user aggregates
+    - Fixed issue with with dfe true/false shortcuts (fixes #1196)
+    - Fixed issues in `ORDER BY` and `GROUP BY` (fixes #1210)
+    - Fixed issues with unix timestamp
+    - Fixed missing argument check to `ORDER BY` and `GROUP BY` (fixed #1182)
+    - Fixed missing check for freetext field (fixes #1220)
+    - Fixed `obj2json` and `obj2xml` should be public functions
+    - Fixed remove duplicate keys in oby/gby (fixes #1205)
+    - Fixed `sprintf` format for windows (fixes #1203)
+
+  * SPARQL
+    - Added support for `GRAPH` decorations in TriG (fixes #1169)
+    - Fixed issue in ontology generation
+    - Fixed issue with drop quad map graph
+    - Fixed issue with restriction on number of deleted triples (fixes #1164)
+    - Fixed issue with turtle/n-triples media type legacy and recent spec. compatibility (fixes #1187)
+    - Fixed issue with very long SPARQL queries
+    - Fixed issues with `Default Graph IRI` from table `SYS_SPARQL_HOSTS` (fixes #1086)
+    - Fixed `virtrdf:Geometry` should be replaced with `wktLiteral` (fixes #806)
+
+  * Web Server and DAV
+    - Added HTTP CORS pattern support
+    - Added support to avoid redundant check for 401 handlers
+    - Added support for Azure Storage Account as a DET mounting option
+    - Added support for Access-Control-Allow-Methods different than Allow, for AJAX CORS
+    - Added `security_realm` to access realm from VD
+    - Added support for ping/pong for websock
+    - Added support for binary frames in websocket
+    - Fixed FS directory browsing does not need SQL/VSP user account
+    - Fixed HTTP 101/204/304 responses MUST not return content
+    - Fixed LDP SPARQL queries `delete`/`insert` should search physical graph only
+    - Fixed check DET HTTP status code
+    - Fixed check for missing graph
+    - Fixed clear HTTP method at session cleanup
+    - Fixed do not use `gzip` if no content is allowed
+    - Fixed HTTP log records partial request over 4k
+    - Fixed issue checking `is_https` on websocket
+    - Fixed issue getting dtp in rdf box case
+    - Fixed issue when ODS is not installed
+    - Fixed issue when response is chunked/gzipped by app
+    - Fixed issue with `DAV_LINK` double escape UTF-8
+    - Fixed issue with bad `Accept` header
+    - Fixed issue with double free
+    - Fixed issue with updating permissions on wiki
+    - Fixed issues with encoding of DAV URLs
+    - Fixed websocket error message indicating what frame type is
+    - Fixed websocket framing on text messages
+    - Fixed missing entry for `.md` text/markdown
+
+  * Faceted Browser
+    - Fixed grants must be added to `SPARQL_SELECT` role
+    - Removed `rdf_resolve_labels_s` case
+
+  * Conductor
+    - Added support for password show/hide in login dialog
+    - Added backup before rdf view creation
+    - Added auto-commit mode flag
+    - Fixed CSV import accessing outside of header array
+    - Fixed error message on page
+    - Fixed import w/o columns detected should not be syntax error
+    - Fixed issue refreshing status variables
+    - Fixed mismatch of a URL parameter and control
+
+  * R2RML
+    - Added quap map iri parameter
+    - Fixed `rr:template` by default is IRI unless column, dt, or lang is given
+    - Fixed complete table name before quoting
+    - Fixed case to ucase for case insensitive lookup
+    - Fixed issue with column CaSeMoDe
+
+  * GraphQL
+    - Fixed issue when field type cannot be detected
+
+
+## September 26, 2023, v7.2.11:
+
+  * Virtuoso Engine
+    - Added log info on manual enable/disable scheduler and checkpoint intervals
+    - Added sprintf format `%[xx]s` for registry settings
+    - Added CPU% and RSS usage to `status()` output
+    - Added BIF `jsonld_ctx_to_dict`
+    - Added input state in `explain` output where missing
+    - Fixed issue with SPARQL `UUID()` function (fixes #515)
+    - Fixed missing grant from `SPARQL_UPDATE` role (fixes #1152)
+    - Fixed issue with `DROP TABLE/VIEW` not checking target
+    - Fixed issue when copying constants in union
+    - Fixed several issues in json parser
+    - Fixed issue with `get_keyword` with soap options vector
+    - Fixed issue with chash on many threads
+    - Fixed issue with lang matches
+    - Fixed issue loading graphql plugin with musl C library
+    - Fixed do not replace trx log prefix with `CHECKPOINT` command
+    - Fixed small typos in documentation and error messages
+
+  * SPARQL
+    - Fixed SPARQL property path query returning incorrect results
+    - Fixed issue with conflict on join predicate of pview leading to AREF error
+    - Fixed issue with heterogeneous data column leading to range assert
+    - Fixed issue reusing boxes
+    - Fixed RDF quad sanity check for 'O' column
+    - Fixed entities in `/sparql` UI for maximum X(HT)ML compatibility
+
+  * Web Server and DAV
+    - Added option `http_options_no_exec` for http virtual path
+    - Added support for `Content-Security-Policy` header
+    - Added optional base url to `http_xslt` function as 3rd parameter
+    - Fixed issues mixing valid and invalid MIME types in `Accept` header
+    - Fixed issue writing log on `delete`, `put`, `patch`, etc.
+    - Fixed missing entry for JSON-LD in RDF DET
+    - Fixed issue with missing href in `PROPPATCH` response
+    - Fixed issue with base64 decode and trailing zeroes
+    - Fixed issue with dead http session
+
+  * Conductor
+    - Added simple webservices UI
+    - Fixed DAV browser to allow editing for json files
+    - Fixed import of all keys in a PEM certificate bundle
+
+
+## June 7, 2023, v7.2.10:
+
+  * Virtuoso Engine
+    - Added checkpoint to end of online backup
+    - Added support for `IF EXISTS` and `IF NOT EXISTS` in `ALTER TABLE`
+    - Added support for `DROP TYPE .... IF EXISTS`
+    - Added support for bulkloading `.jsonld` and `.jsonld.gz` files
+    - Added new testsuite entries for recent fixes
+    - Fixed missing escape of identifiers in log replay
+    - Fixed issue if original dfe not there; see error in optimizer
+    - Fixed issue with transaction mutex inside checkpoint
+    - Fixed `obj2json` output should be canonical
+    - Fixed issue in short-circuit evaluation (fixes #777)
+    - Fixed compare only up to cha key parts (fixes #1117)
+    - Fixed missing arguments in table def (fixes #1118)
+    - Fixed expand column list during parsing (fixes #1119)
+    - Fixed missing check for max number of key parts (fixes #1120)
+    - Fixed missing reuse check for dv bin (fixes #1121)
+    - Fixed 64-bit arith exception (fixes #1122)
+    - Fixed 64-bit arith overflow (fixes #1123)
+    - Fixed do not change `col_dtp` if already set before (fixes #1124)
+    - Fixed save/restore temp refs (fixes #1127)
+    - Fixed issue using `case`/`when` inside arg simple functions like `min`/`max`/`count` fixes #1128)
+    - Fixed handling of aliases in output (fixes #1129)
+    - Fixed cannot add non-null column to existing data (fixes #1130)
+    - Fixed check number of values vs cols when inserting into view (fixes #1134)
+    - Fixed missing check for table in positioned `delete` (fixes #1135)
+    - Fixed non-terminal in union branch is not supported (fixes #1136)
+    - Fixed missing check if column exists (fixes #1137)
+    - Fixed missing check for non-terminals in `WITH DATA` (fixes #1138)
+    - Fixed wrap unions, etc., if non-select for `EXISTS` ( subq ) (fixes #1139)
+    - Fixed first argument of `CONTAINS()` cannot be star (`*`) (fixes #1140)
+    - Fixed missing variable declaration (fixes #1148)
+    - Fixed small memory leaks
+
+  * SPARQL
+    - Backported duration and interval fixes to v7 engine (fixes #1147)
+    - Added N-QUADS support for SPARQL CRUD using REST (fixes #1142)
+    - Added option to limit number of triples in a SPARQL `CONSTRUCT` query
+    - Fixed issue deleting strings with language tag (Fixes #1055)
+    - Fixed IRI patterns for SPARQL `LOAD SERVICE` (fixes #879)
+    - Fixed issues with Turtle 1.1 parser (fixes #1059)
+    - Fixed rdf_regex is set to work with UTF-8 by default (fixes #705)
+    - Fixed suppress errors on loading even for `wktLiterals`, just like `dates`, integer types, etc.
+    - Fixed small SPARQL UI issues
+
+  * Web Server and DAV
+    - Added function to return the current HTTP status code `20x`, `30x`, `40x`, etc., or `NULL` if not set
+    - Fixed HTTPS accept timeout
+    - Fixed issue with `client_protocol` mode
+    - Fixed issue with TCN
+    - Fixed issues with SOAP endpoint
+
+  * Faceted Browser
+    - Added support for showing custom datatypes (fixes #963)
+    - Fixed issues truncating lists using '>>more>>'
+    - Fixed show language when available
+    - Fixed issue generating labels in `urilbl_ac_init_db`
+    - Fixed file permissions in VAD packages
+
+  * Conductor
+    - Added support for uploading N-QUADS and JSON_LD data via Conductor
+    - Fixed file permissions in VAD package
+
+  * JDBC
+    - Added small optimization to VirtuosoInputStream (fixes #1150)
+
+## February 27, 2023, v7.2.9:
+
+This update introduces additional GraphQL enhancements for mutations and subscriptions, as documented in the recently published
+[GraphQL Introduction](https://community.openlinksw.com/t/introducing-native-graphql-support-in-virtuoso/3378)
+and [GraphQL Usage Guide](https://community.openlinksw.com/t/usage-guide-virtuoso-graphql-views-creation-management/3381)
+posts, plus enhancements to the existing 
+[AnyTime Query](https://community.openlinksw.com/t/technology-update-virtuoso-anytime-query-functionality-for-query-scalability/3388)functionality.
+
+  * Virtuoso Engine
+    - Added new JSON-LD parser
+    - Added IRI validation `bif:` functions
+    - Added `GIT SHA1` signature to status and log output
+    - Added current value of backup prefix to status report
+    - Added option for soft `CHECKPOINT`, i.e., only perform a `CHECKPOINT` when the server is in idle state
+    - Backported PL debugger enhancements
+    - Fixed overflow in msec-based timestamps such as those used for AnyTime queries
+    - Fixed PL debugger to produce better debug output for DateTime types
+    - Fixed issue with `NULL` in Aggregate groups
+    - Fixed issue comparing `NUMERIC` and `DOUBLE`
+    - Fixed issue comparing timezoneless and timezoned dates in columnstore index
+    - Fixed issue with `GROUP BY` on `FLOAT` values
+    - Fixed issue with `revoke all privileges from xx`
+    - Fixed issues running testsuite
+    - Fixed issues packaging source for distribution
+
+  * SPARQL
+    - Added default SPARQL namespace prefixes for ActivityStreams, GoodRelations, OA, and PROV vocabularies
+    - Added validation to default-graph parameter
+    - Added error logging for bad IRIs
+    - Added multi-threaded NQuads dump variant for RDF Quad Store via `RDF_DUMP_NQUADS_MT()`
+    - Fixed issue trying to make IRI from incompatible types
+    - Fixed issue with `SPARQL LOAD` into an existing graph
+    - Fixed issue with casting RDF `datetime` to a string
+    - Fixed issue with explicit datatype of literal class; must cast value to a string
+    - Fixed issue with label insert when using `with_delete`
+    - Fixed issue with literals that have both `LANG` & `TYPE`
+    - Fixed issue with load `get:accept` pragma
+    - Fixed issue with permissions; users with `SPARQL_SELECT` role can now use REST interface
+    - Fixed issue with serialization when `datatype` is missing, or `lang` is an empty string
+    - Fixed issue with unnamed result from view
+    - Fixed `DISTINCT` query compilation failure in certain cases where `SELECT` lists contain a reference to a parameter
+    - Fixed `--MM-DD` is a valid `gMonthYear`
+    - Updated Bootstrap to v5.2.3
+    - Updated Bootstrap Icons to v1.10.3
+
+  * Web Server and DAV
+    - Added support for Websockets protocol
+    - Added JSON-LD support to LDP protocol implementation
+    - Added correct HTTP(S) protocol to `%{WSBaseUrl}` variable
+    - Added support for https connection timeout
+    - Added support for internal CA list in https client
+    - Fixed `http_keep_session` and related functions require NN 64-bit id
+    - Fixed issue with `.well-known/host-meta` & co for `application/jrd+json` output
+    - Fixed issue with `Accept/profile`; should follow RFC media type field rules
+    - Fixed issue with `SOCKS4` and `SOCKS5` proxy handler
+    - Fixed issue when socket is closed prematurely
+    - Fixed issue with LDP sparql queries and rdf views
+    - Fixed missing JSON-LD in RDF-related DETs
+
+  * Faceted Browser
+    - Fixed format of `INTEGER` and `FLOAT` fields
+    - Fixed issue calculating Unicode labels
+    - Fixed issue calculating labels for blank nodes
+    - Fixed issue with Unicode text in `<span>`
+    - Fixed use `schema:description` as alt for `rdfs:comment`
+    - Updated JQuery to v3.6.3
+    - Updated JQuery UI to v1.13.2
+
+  * Conductor
+    - Added Automatic Certificate Management Environment (ACME) client protocol
+    - Fixed issue in `VAD` installer when composing the `VAD` package file path
+    - Fixed confirmation prompt behavior prior to removing user encryption keys from Virtuoso’s native key store
+
+  * R2RML
+    - Fixed issue with rr:template: default is IRI unless column, datatype, or lang are given
+
+  * GraphQL
+    - Added graphql-ws protocol
+    - Added GraphQL subscriptions support
+    - Added implementation-specific directives for SQL/SPARQL optimization hints
+    - Added transitivity for smarter and more concise GraphQL-to-RDF-Ontology mapping definitions
+    - Added debug options to endpoint
+    - Improved mutations support
+    - Improved SDL-type schema import
+    - Improved error reporting on conflicting schema & mapping/annotation definitions
+    - Cleaned up introspection schema
+
+
+
+## October 19, 2022, v7.2.8:
+
+This update introduces native GraphQL support, as documented in the recently published
+[GraphQL Introduction](https://community.openlinksw.com/t/introducing-native-graphql-support-in-virtuoso/3378) and
+[GraphQL Usage Guide](https://community.openlinksw.com/t/usage-guide-virtuoso-graphql-views-creation-management/3381) posts,
+plus enhancements to existing [AnyTime Query](https://community.openlinksw.com/t/technology-update-virtuoso-anytime-query-functionality-for-query-scalability/3388) functionality.
+
+  * Virtuoso Engine
+    - Added support for `IF EXISTS` and `IF NOT EXISTS` in SQL DDL
+    - Added more `EXPORTS` for plugins
+    - Added current value of backup prefix to status report
+    - Added support for changing the request timeout on `http_client` connections
+    - Added support for internal x509 CA list
+    - Added support for storing DH param in database
+    - Added handle validation to ODBC calls
+    - Updated CORS header handling
+    - Fixed issue with 64-bit indicators in `sys_stat`
+    - Fixed `http_keep_session` and related functions that require 64-bit ID
+    - Fixed use separate table to keep HTTP(S) listeners settings
+    - Fixed issue with OpenSSL 3.0.x
+    - Fixed issue with bad stats pending RPC counter
+    - Fixed issues with HTTP renegotiate
+    - Fixed compiler warnings and other small cleanups
+    - Updated Windows build
+
+  * SPARQL
+    - Added GraphQL to SPARQL bridge
+    - Added support for HTTP status code `206` to signal partial result
+    - Optimized selecting distinct graphs
+    - Upgraded SPARQL endpoint to latest version of bootstrap
+    - Fixed system crash on 'Generate SPARQL compilation report" (fixes #1068)
+    - Fixed crash on vec temp res w/ nulls (fixes #1065)
+    - Fixes issue printing datetime boxes
+    - Fixed issue with unnamed result col from RDF view
+    - Fixed check for non-existing IRI ID
+    - Fixed grants for RDF views
+    - Fixed issue returning the reserved 0x2000 IRI ID
+    - Fixed anonymous sponging is not allowed
+    - Fixed timeout validation
+    - Fixed error report on unknown help topic
+    - Removed cast to string which limited output to 10Mb
+
+  * JDBC, Jena and RDF4j
+    - Optimized finalizers
+    - Fixed IRI escape
+    - Fixed issue with inserting Literal with Language
+    - Fixed issue with query param binding
+    - Fixed parameter binding issues in RDF4J provider
+    - Fixed issues with query param binding
+
+  * Faceted Browser
+    - Added support to try loading external images w/ referer policy
+    - Added support to show users location on map
+    - Fixed rounding lat/long to 4 digits to get true distinction on map
+    - Fixed JSON result from FCT service
+    - Fixed handling of inline images
+    - Fixed IRI search requires 64-bit prefix
+    - Fixed issue when an empty IRI is requested
+    - Fixed URL rewrite rules
+    - Fixed pages should not call batch FT procedures
+    - Fixed small PL warnings
+
+  * Conductor
+    - Added support for CORS allow headers in Conductor UI
+    - Added support for local CA renewal
+    - Added support for multi-domain certificates in HTTPS listener UI
+    - Fixed HTTPS endpoints
+    - Fixed disable VAD re-install if no such file exists
+    - Fixed https setup was missing CA x509 verify list option
+    - Fixed missing delete from listeners table
+    - Fixed update of existing listener did not write changes to table
+    - Fixed use common API for adding new listener
+
+  * DAV
+    - Fixed issue with delete on LDP resource 
+    - Fixed CORS header handling
+
+## May 17, 2022, v7.2.7:
+
+The Virtuoso engine has been enhanced to use 64-bit prefix IDs in `RDF_IRI` which allows for
+very large databases such as [Uniprot](https://www.uniprot.org/), which currently contains over
+90 billion triples, to be hosted using the Virtuoso Open Source engine.
+
+While new databases automatically make use of this important enhancement, existing databases
+will need to be upgraded. 
+
+Please read our [instructions to upgrade from 7.2.x to 7.2.7](README.UPGRADE.md#upgrading-from-vos-72x-to-vos-727)
+
+  * Virtuoso Engine
+    - Added optimizations for clearing graph
+    - Added optimizations for deleting triples
+    - Added support for CONNECT to allow http proxy like squid to tunnel https:// requests
+    - Added support for OpenSSL 3.0.x
+    - Added support for cast epoch time back to date/datetime
+    - Added support for handling X-Forwarded-Proto header from proxy
+    - Added support to fine tune size of memory pool used by SPARQL constructs
+    - Added support to populate labels in insert for FCT
+    - Added optional digest name to aes key
+    - Added short name date BIF functions
+    - Added xenc_digest and xenc_hmac_digest BIF functions
+    - Added unix_timestamp() BIF function
+    - Added support for handling HTTP status 307 and 308 in client
+    - Fixed Host header should include non-standard port.
+    - Fixed SQLConnect handling of empty strings in szDSN and szUID
+    - Fixed SSL_renegotiate for OpenSSL 1.1.x
+    - Fixed backup_online syntax
+    - Fixed calculations from TZ in minutes to +HHMM format
+    - Fixed check for https behind proxy for dynamic local
+    - Fixed crypto functions error codes
+    - Fixed issue calling external proxy with https address
+    - Fixed issue executing vec exec expression in WHERE clause
+    - Fixed issue generating triples from rdf view to physical store with rdfs:label property
+    - Fixed issue sorting NaN values in colstore
+    - Fixed issue with X509 CSR generation
+    - Fixed issue with backup restore and DDL from plugins
+    - Fixed issue with dsa and rsa keys when no cert is attached
+    - Fixed issue with registering tables in plugin
+    - Fixed issues with x509 extensions
+    - Fixed memory leak in colsearch
+    - Fixed missing index upgrading older databases
+    - Fixed possible box corruption printing a very long literals box
+    - Fixed return HTTP 503 even if MaintenancePage cannot be found
+    - Fixed serialize of AES IV
+    - Fixed subject should be written in UTF8 format
+    - Fixed trace to log warnings as WARN_0 instead of ERRS_0
+    - Fixed when running as windows service, stderr is an invalid handle
+    - Removed redundant checkpoints when creating new database
+    - Small cleanups
+
+  * SPARQL
+    - Added optimizations for clearing graph
+    - Added optimizations for deleting triples
+    - Added initial list of languages to decrease risk of deadlocks
+    - Added SPARQL_SELECT_FED role
+    - Added RDF_DUMP_GRAPH and RDF_DUMP_NQUADS as built-in stored procedures
+    - Added missing JSON support function to format output of ASK query
+    - Added support to fine tune size of memory pool used by SPARQL constructs
+    - Fixed /sparql-auth requests should not be redirect to /sparql
+    - Fixed RDF loading re. transaction modes.
+    - Fixed SPARQL endpoint description document
+    - Fixed functions for making rdf literals must return dc of boxes
+    - Fixed incorrect handling of UTF8 characters on SPARQL HTTP endpoint
+    - Fixed issue converting RDF metadata from older databases
+    - Fixed issue with ANYTIME query timeout values
+    - Fixed issue with JSON-LD and JSON-LD (with context) mime types
+    - Fixed issue with SPARQL ASK in embedded PL
+    - Fixed issue with SPARQL variables containing unicode characters
+    - Fixed issue with incomplete RDF box
+    - Fixed old proxy and redirect handling in RDF_HTTP_URL_GET
+    - Fixed reporting when new graph is created
+    - Fixed use a standard namespace URI for special bif: and sql: SPARQL Built-in functions
+    - Removed redundant checkpoints when creating new database
+    - Small cleanups
+
+  * JDBC, Jena and RDF4j
+    - Added optimizations for bulk deleting triples
+    - Added support for all JDBC Transaction Isolation levels
+    - Added new class VirtStreamRDF for support stream uploading to Virtuoso
+    - Fixed issue with closing/leaking JDBC statements
+    - Fixed issue with exceptions
+    - Fixed issue using batchSize
+    - Fixed SQLException handler for better conversion to JenaException
+
+    - Small cleanups
+
+  * Faceted Browser
+    - Added check if automated label fill is enabled
+    - Added some nofollow and noindex hints for bots
+    - Added support to use built-in rdf_label and don't cache the object value twice
+    - Fixed UTF-8 encoding issues
+    - Fixed XSS issue
+    - Fixed bad url encoding
+    - Fixed caching query via plink
+    - Fixed decoding of percent-encoded URLs when used as labels
+    - Fixed detection of label language
+    - Fixed do not make default http links
+    - Fixed do not remove user defined graphs
+    - Fixed efficiency of label language lookup
+    - Fixed endpoint creation
+    - Fixed issue with bnodes
+    - Fixed issue with sid
+    - Fixed issue with sponge link in header
+    - Fixed make ifps secure
+    - Fixed missing graph group
+    - Fixed only make link when protocol scheme is safe (http, https, ftp)
+    - Fixed order labels by accept-language
+    - Fixed return 404 if usage.vsp is called with bad url
+    - Fixed several issues in About: block
+    - Fixed usage.vsp for safe links
+    - Fixed whitespace in Link: header
+    - Updated S ranking algorithm
+
+  * Conductor
+    - Added faster check for version of installed VAD package
+    - Added drop statement and better reporting (ala-isql)
+    - Added fingerprint info for system root key
+    - Added git hash to the build info
+    - Added warning to modifying registry by hand
+    - Fixed dependency check on ODS
+    - Fixed ensure DB qualifier for conductor
+    - Fixed fully qualified view name and use DB qual for all conductor sql
+    - Fixed import of user's key
+    - Fixed installation of VADs can only be performed by dba account
+    - Fixed issue with encoding
+    - Fixed issue with non-dba user login causing inf redirects
+    - Fixed missing check for ODS Briefcase
+    - Fixed LDP metadata
+    - Fixed the the rr:graph was not taken from RML doc - UI changes
+    - Fixed UI form related to importing RDF files
+    - Fixed UI form related to RDF push subscriptions
+    - Fixed url encoding
+
+  * DAV
+    - Added helper function for fixing DAV COL_FULL_PATH
+    - Fixed encoding-type for text/* files
+    - Fixed handling of content type
+    - Fixed issue removing properties
+    - Fixed LDP metadata
+    - Fixed unhandled error when COL_FULL_PATH is NULL
+    - Removed redundand join with all graphs
+
+  * GEO
+    - Added GEOS-isValid BIF
+
+  * R2RML
+    - Fixed handling tableName attribute as per spec
+    - Fixed rr:graph was not taken from RML doc
+
+## June 22, 2021, v7.2.6:
+
+  * Virtuoso Engine
+    - Added support for macOS Big Sur (11.x) on Intel (x86_64) and Apple Silicon (arm64 or M1)
+    - Added support for Linux on arm64 such as Raspberry Pi
+    - Added support for OpenSSL 1.1.1
     - Added support for Strict-Transport-Security header
     - Added check to make sure RPNG is properly seeded
     - Added support for Forward Secrecy using DH and ECDH
-    - Added missing X509_STRING_DATE
     - Added support for rwlock in dict
+    - Added support for latest iODBC DM Unicode fixes
+    - Added support for unfoldable internal functions in execution plan
     - Fixed default cipher list
-    - Fixed issues with SSL_CTX options
     - Fixed set default protocol to TLSv1.2 or newer when possible
-    - Fixed issue setting cipherlist on https ctx
+    - Fixed issue setting cipher list on https ctx
+    - Fixed issues ordering NaN values
+    - Fixed issue with atomic transactions
+    - Fixed issue reading large blobs
+    - Fixed small memory leaks
+    - Fixed small portability issues
+    - Fixed dependency on netstat during building and testing
 
   * SPARQL
     - Added initial support for GeoSPARQL functions
+    - Added new bootstrap 4 based /sparql (X)HTML endpoint
+    - Added support for Content-Disposition header hint for browsers
+    - Added flag to control inference optimizations by G
+    - Added support for property paths in federated SPARQL queries
     - Fixed namespace check for bif: and sql: and issues with system functions
+    - Fixed issue with JSON-LD and JSON-LD (with context) mime types
+    - Fixed output formats to use UTF-8 and HTML5 or XHTML5
+    - Fixed splitting on '/#:' produces better results for unnamed prefixes
 
   * JDBC Driver
-    - Fixed issue with closing stmt handle in PreparedStatement
-    - Removed support for deprecated versions of JDKs 1.1, 1.2, 1.3, 1.4 and 1.5
+    - Added support for JDBC 4.3
     - Moved SSL connectivity into regular jdbc drivers
+    - Fixed issue with closing stmt handle in PreparedStatement
+    - Fixed JDBC RPC login options
+    - Fixed issue with POINTZ
+    - Fixed constructions using new Long/Byte/Short/Character
+    - Fixed issue with finalizers
+    - Fixed issue running jdbc testsuite
+    - Removed support for deprecated versions of JDKs 1.1, 1.2, 1.3, 1.4 and 1.5
 
   * Faceted Browser
+    - Added FCT Configuration page in Conductor
+    - Added specific Map view options using dedicated graph
+    - Added configuration option to control browser cache
+    - Added small inference rule for link-out icons
+    - Added support for schema.org latitude/longitude in factet inference
+    - Added new setting to treat narrow string boxes as UTF-8 encoded
     - Added page to show state of Entity Data generation
     - Added preview for embedded content
     - Added statistics about users of IRI as subject or object in graph to Metadata page
@@ -36,17 +870,56 @@ October 2, 2018, v7.2.6-dev:
     - Fixed issue with page refresh when Show x rows selector changes
     - Fixed issues with https in /describe content negotiation in Alternates and Location headers
     - Fixed issues with /describe page behind a (ssl) proxy
+    - Fixed reporting proper datatype of object rather than box type
 
   * Conductor
+    - Added UI optimizations
+    - Added option to view CalDAV and CardDAV resources
+    - Disabled triggers generation for RDF view referencing SQL views
+    - Fixed issue creating LDP collection data
+    - Fixed issue creating user's IRIs
+    - Fixed issue in RDF console
+    - Fixed issues editing soap services
+    - Fixed login when conductor is behind a proxy
+    - Fixed small build issues
     - Moved binsrc/yacutia binsrc/conductor
 
   * DAV
+    - Added new optimizations for WebDAV
+    - Added support to move lost collections to '/DAV/.lost+found/' collection
+    - Added triggers to check the collection hierarchy before updates
+    - Added performance improvements for some often used functions
+    - Added additional checks for some API calls
+    - Updated triggers and procedures to use the new column COL_FULL_PATH
+    - Fixed issue in conductor showing folder content after rename.
+    - Fixed issue with ID of DET collections and optimize DAV_SEARCH_ID
+    - Fixed issues reported by the Litmus DAV testsuite for COPY and MOVE
+    - Fixed issues with LDP, PROPFIND, PATCH
+    - Fixed issues with HostFs DET actions
+    - Fixed issue with SSL HTTP authentication
     - Fixed issue with LDP POST command
     - Fixed LDP folder content return (by GET)
 
+  * GEO
+    - Added new plugins proj4, geos and shapefileio for GeoSPARQL
+    - Added check if proj data has been loaded
+    - Fixed issue in error handling
+    - Fixed handling of GEO_NULL_SHAPE
+    - Fixed bif:st_intersects
+    - Fixed issue with empty shape
+    - Fixed handling empty and invalid geometries
+    - Fixed portability issues
 
-August 15, 2018, v7.2.5
------------------------
+  * ODS
+    - Fixed issue login into ODS
+    - Fixed OAUTH token
+
+  * R2RML
+    - Fixed support for rr:datatype and rr:language
+
+
+## August 15, 2018, v7.2.5
+
   * Virtuoso Engine
     - Added support for application/n-triples mime type
     - Added support for modifying size of SQL compiler cache
@@ -150,8 +1023,8 @@ August 15, 2018, v7.2.5
     - Added LODmilla browser
 
 
-April 25, 2016, v7.2.4
-----------------------
+## April 25, 2016, v7.2.4
+
   * Virtuoso Engine
     - Added "obvious" index choice
     - Added new bif http_redirect_from for getting initial path from internal redirect
@@ -246,8 +1119,8 @@ April 25, 2016, v7.2.4
     - Fixed the http://mementoarchive.lanl.gov link
 
 
-December 09, 2015, v7.2.2
--------------------------
+## December 09, 2015, v7.2.2
+
   * Virtuoso Engine
     - Added support for reading bzip2 compressed files
     - Added support for reading xz/lzma compressed files
@@ -365,8 +1238,8 @@ December 09, 2015, v7.2.2
     - Fixed timezone bug with S3 DET
 
 
-June 24, 2015, v7.2.1
----------------------
+## June 24, 2015, v7.2.1
+
   * Virtuoso Engine
     - Added support for datetime without timezone
     - Added new implementation of xsd:boolean logic
@@ -457,8 +1330,8 @@ June 24, 2015, v7.2.1
     - Fixed issues with subfolders of DETs type ResFilter and CatFilter
     - Fixed labels
 
-February 17, 2015, v7.2.0
--------------------------
+## February 17, 2015, v7.2.0
+
   * Virtuoso Engine
     - Added new threadsafe / reentrant SQL parser
     - Added support for using TLSF library for page-maps
@@ -572,8 +1445,8 @@ February 17, 2015, v7.2.0
     - Fixed labels
     - Fixed links
 
-February 17, 2014, v7.1.0
--------------------------
+## February 17, 2014, v7.1.0
+
   * Engine
     - Enhancements to cost based optimizer
     - Added optimization when splitting on scattered inserts
@@ -681,15 +1554,15 @@ February 17, 2014, v7.1.0
     - Changed describe mode for PivotViewer link
 
 
-August 02, 2013, v7.0.0
------------------------
+## August 02, 2013, v7.0.0
+
   * First official release of Virtuoso Open Source Edition v7.0
 
   NOTE: At this point in time the engine is only buildable in 64bit mode
 
 
-July 12, 2011, v7.0.0-alpha
----------------------------
+## July 12, 2011, v7.0.0-alpha
+
   * First release of the experimental v7 branch.
 
   NOTE: This version is unstable and should not be used for any production

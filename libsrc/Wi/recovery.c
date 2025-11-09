@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -888,7 +888,7 @@ db_dbg_account_check_page_in_hash (dp_addr_t start)
 }
 
 void
-db_dbg_account_init_hash ()
+db_dbg_account_init_hash (void)
 {
   if (!blob_pages_hash)
     {
@@ -933,29 +933,6 @@ db_to_log (void)
 #endif
 }
 
-/*
- * these define's should be somewhere else
- */
-#ifdef WIN32
-#define PATH_SEP '\\'
-#else
-#define PATH_SEP '/'
-#endif
-
-#ifdef WIN32
-#include <windows.h>
-#define HAVE_DIRECT_H
-#endif
-
-#ifdef HAVE_DIRECT_H
-#include <direct.h>
-#include <io.h>
-#define PATH_MAX	 MAX_PATH
-#else
-#include <dirent.h>
-#endif
-
-
 void
 backup_prepare (query_instance_t * qi, char * file)
 {
@@ -990,7 +967,7 @@ backup_prepare (query_instance_t * qi, char * file)
   if (!srv_have_global_lock(THREAD_CURRENT_THREAD))
     IN_CPT (qi->qi_trx);
 
-  if (strchr(file, PATH_SEP) == NULL)
+  if (strchr(file, DIR_SEP) == NULL)
     {
       /*
        * no path specified: select backup directory
@@ -1014,7 +991,7 @@ backup_prepare (query_instance_t * qi, char * file)
 	    {
 	      errmsg = "filename too long";
 	      log_warning ("backup_prepare: %s%c%s: %s",
-		dirlen, PATH_SEP, file, errmsg);
+		dirlen, DIR_SEP, file, errmsg);
 	      bd = bd->next;
 	      continue;
 	    }
@@ -1022,7 +999,7 @@ backup_prepare (query_instance_t * qi, char * file)
 	  fname = buf;
 	  strcpy_size_ck (fname, dir, sizeof (buf));
 	  if (dirlen < sizeof (buf) - 1)
-	    fname[dirlen] = PATH_SEP;
+	    fname[dirlen] = DIR_SEP;
 	  strcpy_size_ck (fname + dirlen + 1, file, sizeof (buf) - dirlen - 1);
 
 	  /* try to open file */

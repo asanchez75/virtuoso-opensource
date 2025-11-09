@@ -4,7 +4,7 @@
  -  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  -  project.
  -
- -  Copyright (C) 1998-2021 OpenLink Software
+ -  Copyright (C) 1998-2025 OpenLink Software
  -
  -  This project is free software; you can redistribute it and/or modify it
  -  under the terms of the GNU General Public License as published by the
@@ -27,7 +27,7 @@
         xmlns:v="http://www.openlinksw.com/vspx/"
         xmlns:vm="http://www.openlinksw.com/vspx/macro"
         doctype="-//W3C//DTD XHTML 1.0 Transitional//EN">
-  <vm:pagetitle>Linked Data View definition</vm:pagetitle>
+  <vm:pagetitle>RDF Views Definitions</vm:pagetitle>
   <vm:pagewrapper>
   <vm:menu>
   </vm:menu>
@@ -56,7 +56,7 @@
       <v:variable persist="0" name="pgraphv" type="varchar" default="''" param-name="pgraph"/>
   </vm:variables>
 
-  <vm:header caption="Linked Data View definition"/>
+  <vm:header caption="RDF Views Definitions"/>
   <vm:pagebody>
     <script type="text/javascript">
       <![CDATA[
@@ -82,13 +82,15 @@
 	      declare stat, msg varchar;
 	      declare res, arr, data, meta, gr, path, ret any;
 	      declare inx int;
+              declare backup_name varchar;
 
 	      path := concat('/DAV/temp/', self.sid, '.sql');
 	      DB.DBA.YACUTIA_DAV_DELETE (path, 1, 0);
 	      DB.DBA.YACUTIA_DAV_COL_CREATE('/DAV/temp/', '110110000NN', 'dav', 'administrators');
-	      DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, Y_RDF_VIEW_DROP_STMT (self.base_url) || self.body_v, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
+          DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, self.body_v, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
 
-	      arr := sql_split_text (Y_RDF_VIEW_DROP_STMT (self.base_url) || self.body_v);
+              backup_name := DB.DBA.RDF_BACKUP_METADATA(0,sprintf ('urn:sys:backup:%ld',unix_timestamp()));
+          arr := sql_split_text (self.body_v);
 	      res := make_array (length (arr) + 1, 'any');
 
 	      inx := 0;
@@ -114,7 +116,7 @@
 	         DB.DBA.YACUTIA_DAV_DELETE (path, 1, 0);
 	         DB.DBA.YACUTIA_DAV_COL_CREATE('/DAV/temp/', '110110000NN', 'dav', 'administrators');
 	         DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, self.body_o, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
-		 gr := sprintf ('http://%s/schemas/%s#', cfg_item_value(virtuoso_ini_path(), 'URIQA','DefaultHost'), self.base_url);
+		 gr := sprintf ('http://%s/schemas/%s#', virtuoso_ini_item_value ('URIQA','DefaultHost'), self.base_url);
 		 stat := '00000';
 		 msg := 'OK';
 		 sparql clear graph iri (?:gr);
@@ -127,6 +129,7 @@
 	         from <%S> { ?s rdfs:subPropertyOf virtrdf:label }', gr), stat, msg, vector (), 0, meta, data);
 	         rdfs_rule_set ('virtrdf-label', 'virtrdf-label');
 	       }
+             res := vector_concat (res, vector (vector (vector ('BACKUP', backup_name))));
 	     exec ('checkpoint');  
 	     self.text_e := 1;
 	     self.exec_ret := res;
@@ -209,6 +212,10 @@
 	      if (self._view)
 	        {
 		  self.body_v := self.body_v || '\n\n';
+                if (__proc_exists('DB.DBA.RDF_VIEW_DROP_QM_STMT'))
+                  self.body_v := self.body_v || RDF_VIEW_DROP_QM_STMT (_base_url, self.db_object_to_process, self.voidst);
+                else
+                  self.body_v := self.body_v || RDF_VIEW_DROP_STMT (_base_url);
 		  self.body_v := self.body_v || DB.DBA.RDF_VIEW_FROM_TBL (_base_url, tbls, self.voidst, cols);
 		  if (__proc_exists ('DB.DBA.R2RML_FROM_TBL') is not null)
 		    self.body_r2rml := R2RML_FROM_TBL (_base_url, tbls, self.voidst, cols);
@@ -222,7 +229,7 @@
 	      path := concat('/DAV/temp/', self.sid, '.sql');
 	      DB.DBA.YACUTIA_DAV_DELETE (path, 1, 0);
 	      DB.DBA.YACUTIA_DAV_COL_CREATE('/DAV/temp/', '110110000NN', 'dav', 'administrators');
-	      DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, Y_RDF_VIEW_DROP_STMT (self.base_url) || self.body_v, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
+              DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, self.body_v, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
 	    }
 	   if (self.body_o is null and self.owl)
              {
@@ -238,7 +245,7 @@
 	     }
 	    if (self.exec_it = 1)
 	      {
-	        self.exec_all (self.exec);
+              self.exec_all (self.exec_btn);
                 self.exec_it := 0;
 	      }
 	    ]]>
@@ -306,7 +313,7 @@
 	  <?vsp
 	       declare defhost, stat, msg, data, meta, data2, meta2, qr, gr, fct_installed any;
 	       stat := '00000';
-	       defhost := cfg_item_value(virtuoso_ini_path(), 'URIQA','DefaultHost');
+	       defhost := virtuoso_ini_item_value ('URIQA','DefaultHost');
 	     gr := sprintf ('http://%s/%s#', defhost, self.base_url);
 	       if (exists (select 1 from VAD.DBA.VAD_REGISTRY where R_KEY like '/VAD/fct/%/resources/dav/%'))
 	         fct_installed := 1;
@@ -335,7 +342,7 @@
 		   exec (qr, stat, msg, vector (), 0, meta, data);
 		   if (stat = '00000' and length (data) and length (data[0]))
 		     {
-		     http (sprintf ('<div>Transient Views: <a href="/describe/?uri=%U"i target="_blank">%V</a> <br/>', gr, gr));
+                  http (sprintf ('<div>Transient Views: <a href="/describe/?uri=%U" target="_blank">%V</a> <br/>', gr, gr));
 		       foreach (any _row in data) do
 			 {
 			   if (_row[0] not like '%/stat#%')
@@ -483,7 +490,7 @@
 	      path := concat('/DAV/temp/', self.sid, '.sql');
 	      DB.DBA.YACUTIA_DAV_DELETE (path, 1, 0);
 	      DB.DBA.YACUTIA_DAV_COL_CREATE('/DAV/temp/', '110110000NN', 'dav', 'administrators');
-	      DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, Y_RDF_VIEW_DROP_STMT (self.base_url) || self.body_v, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
+                  DB.DBA.YACUTIA_DAV_RES_UPLOAD (path, self.body_v, '', '110110000NN', 'dav', 'administrators', now(), now(), null);
              if (self.owl)
                {
 	         path := concat('/DAV/temp/', self.sid, '.n3');
@@ -495,7 +502,7 @@
               </v:on-post>
       </v:button>
 
-      <v:button action="simple" name="exec" value="Execute">
+            <v:button action="simple" name="exec_btn" value="Execute">
               <v:on-post>
                 <![CDATA[
 	      self.exec_all (control);
@@ -567,7 +574,7 @@
                   self.vc_is_valid := 0;
                   return;
   	        };
-                    YAC_DAV_RES_UPLOAD (self.filename.ufl_value, Y_RDF_VIEW_DROP_STMT (self.base_url) || self.body_v, 'text/plain', '110100000N', connection_get('vspx_user'), null, connection_get('vspx_user'));
+                    YAC_DAV_RES_UPLOAD (self.filename.ufl_value, self.body_v, 'text/plain', '110100000N', connection_get('vspx_user'), null, connection_get('vspx_user'));
               self.sc_1.vc_enabled := 1;
               self.sc_1.vc_data_bind (e);
             }
@@ -635,7 +642,7 @@
         <v:template type="simple" name="sc_1" enabled="0">
           <tr>
 	    <td>
-	      <img class="dialog_icon" src="images/icons/about_32.png" alt="Info" title="Info"/> The Linked Data View definition is exported successfully.
+              <img class="dialog_icon" src="images/icons/about_32.png" alt="Info" title="Info"/> The RDF Views Definitions is exported successfully.
 	    </td>
           </tr>
         </v:template>

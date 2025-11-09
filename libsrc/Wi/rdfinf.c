@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -323,7 +323,7 @@ iri_ensure (caddr_t * qst, caddr_t name, int flag, caddr_t * err_ret)
 char * sas_1_text = "select S from DB.DBA.RDF_QUAD where G = ? and O = ? and P = ? option (quietcast)";
 char * sas_2_text = "select O from DB.DBA.RDF_QUAD where G = ? and S = ? and P = ? option (quietcast)";
 char * sas_tn_text = "select O from DB.DBA.RDF_QUAD where S = :0 and P = rdf_sas_iri () and G in (:1) and isiri_id (O) union all select S from DB.DBA.RDF_QUAD where O = :0 and P = rdf_sas_iri () and G in (:1) option (quietcast, array)";
-char * sas_tn_no_graph_text = "select O from DB.DBA.RDF_QUAD where S = :0 and P = rdf_sas_iri () union all select S from DB.DBA.RDF_QUAD where O = :0 and P = rdf_sas_iri () option (quietcast, array)";
+char * sas_tn_no_graph_text = "select O from DB.DBA.RDF_QUAD where S = :0 and isiri_id (O) and P = rdf_sas_iri () union all select S from DB.DBA.RDF_QUAD where O = :0 and P = rdf_sas_iri () option (quietcast, array)";
 char * tn_ifp_text =
   " select S from DB.DBA.RDF_QUAD table option (index RDF_QUAD_POGS)"
   " where P in (rdf_inf_ifp_list (:1)) and O = :0 and not isiri_id (:0) and G in (:2) and not rdf_inf_ifp_is_excluded (:1, P, :0) "
@@ -368,7 +368,7 @@ id_hash_t * tn_ifp_no_graph_ht;
 dk_mutex_t * tn_cache_mtx;
 
 void
-sas_ensure ()
+sas_ensure (void)
 {
   caddr_t err;
   if (!sas_1_qr)
@@ -1860,18 +1860,24 @@ sqlg_rdf_ts_replace_ssl (table_source_t * ts, state_slot_t * old, state_slot_t *
 }
 
 
-state_slot_t *
-sqlg_col_ssl (df_elt_t * tb_dfe, char * name)
+df_elt_t *
+sqlg_col_dfe (df_elt_t * tb_dfe, char * name)
 {
   DO_SET (df_elt_t *, out, &tb_dfe->_.table.out_cols)
     {
       if (0 == stricmp (out->_.col.col->col_name, name))
-	return out->dfe_ssl;
+	return out;
     }
   END_DO_SET();
   return NULL;
 }
 
+state_slot_t *
+sqlg_col_ssl (df_elt_t * tb_dfe, char * name)
+{
+  df_elt_t * col = sqlg_col_dfe (tb_dfe, name);
+  return col ? col->dfe_ssl :  NULL;
+}
 
 void
 sqlg_ri_post_filter (table_source_t * ts, df_elt_t * tb_dfe, rdf_inf_pre_node_t * ri, int p_check)
@@ -2030,19 +2036,90 @@ sqlg_leading_subclass_inf (sqlo_t * so, data_source_t ** q_head, data_source_t *
   ri->ri_ctx = ctx;
 }
 
+int
+dfe_references (sqlo_t * so, df_elt_t *dfe, df_elt_t * refd)
+{
+  int inx;
+  if (NULL == refd)
+    return 0;
+  if (DFE_TRUE == dfe || DFE_FALSE == dfe) /* true is NULL */
+    return 0;
+  if (refd == dfe)
+    return 1;
+  if (dfe->dfe_tree && box_equal ((box_t) dfe->dfe_tree, (box_t) refd->dfe_tree))
+    return (NULL != refd->dfe_tree);
+  switch (dfe->dfe_type)
+    {
+      case DFE_BOP:
+      case DFE_BOP_PRED:
+          if (dfe_references (so, dfe->_.bin.left, refd))
+            return 1;
+          if (dfe_references (so, dfe->_.bin.right, refd))
+            return 1;
+          break;
+      case DFE_CONTROL_EXP:
+          DO_BOX (ST *, elt, inx, dfe->dfe_tree->_.comma_exp.exps)
+            {
+              df_elt_t *pred = sqlo_df (so, elt);
+              if (dfe_references (so, pred, refd))
+                return 1;
+            }
+          END_DO_BOX;
+          break;
+      case DFE_CALL:
+          DO_BOX (ST *, elt, inx, dfe->dfe_tree->_.call.params)
+            {
+              df_elt_t *arg = sqlo_df (so, elt);
+              if (dfe_references (so, arg, refd))
+                return 1;
+            }
+          END_DO_BOX;
+          break;
+      default:
+          break;
+    }
+  return 0;
+}
+
+int
+pred_body_references (sqlo_t * so, df_elt_t ** pred, df_elt_t * refd)
+{
+  int op;
+  if (!IS_BOX_POINTER (pred) || !refd)
+    return 0;
+  op = (ptrlong)pred[0];
+  if (BOP_AND == op || BOP_OR == op || BOP_NOT == op)
+    return pred_body_references (so, (df_elt_t**)pred[1], refd);
+  if (DFE_PRED_BODY == op)
+    {
+      uint32_t inx;
+      for (inx = 1; inx < BOX_ELEMENTS (pred); inx++)
+	{
+	  df_elt_t * dfe = pred[inx];
+	  if (DFE_BOP_PRED == dfe->dfe_type)
+	    return 0;
+	  if (dfe_references (so, dfe, refd))
+	    return NULL != refd;
+	}
+    }
+  return 0;
+}
+
 
 void
 sqlg_trailing_subclass_inf (sqlo_t * so, data_source_t ** q_head, data_source_t * ts, df_elt_t * p_dfe, caddr_t p_const, df_elt_t * o_dfe, caddr_t o_iri,
 			    rdf_inf_ctx_t * ctx, df_elt_t * tb_dfe, int inxop_inx)
 {
   state_slot_t * o_slot;
+  df_elt_t * o_col;
   rdf_inf_pre_node_t * ri;
   if (sas_dummy_ctx == ctx
       || tb_dfe->_.table.is_inf_col_given)
     return;
   if (p_const && !box_equal (rdfs_type, p_const))
     return;
-  o_slot = sqlg_col_ssl (tb_dfe, "O");
+  o_col = sqlg_col_dfe (tb_dfe, "O");
+  o_slot = o_col ? o_col->dfe_ssl : NULL;
   if (!o_slot)
     return; /* o is unspecified and but is not accessed */
   ri = sqlg_rdf_inf_node (so->so_sc);
@@ -2055,6 +2132,17 @@ sqlg_trailing_subclass_inf (sqlo_t * so, data_source_t ** q_head, data_source_t 
     ri->ri_p = p_dfe->dfe_ssl;
   else
     ri->ri_p = sqlg_col_ssl (tb_dfe, "P");
+  if (pred_body_references (so, tb_dfe->_.table.join_test, o_col))
+    {
+      data_source_t * last_with_test = qn_last(ts);
+      while (last_with_test && !last_with_test->src_after_test)
+        last_with_test = qn_prev(q_head, last_with_test);
+      if (last_with_test) /* precaution, NULL should not happen since tb has jt */
+        {
+          ri->src_gen.src_after_test = last_with_test->src_after_test;
+          last_with_test->src_after_test = NULL;
+        }
+    }
   ri->ri_ctx = ctx;
 }
 
@@ -2110,12 +2198,14 @@ sqlg_trailing_subproperty_inf (sqlo_t * so, data_source_t ** q_head, data_source
 			    rdf_inf_ctx_t * ctx, df_elt_t * tb_dfe, int inxop_inx)
 {
   state_slot_t * p_slot;
+  df_elt_t * p_col;
   rdf_inf_pre_node_t * ri;
   if (sas_dummy_ctx == ctx
       || tb_dfe->_.table.is_inf_col_given)
     return;
 
-  p_slot = sqlg_col_ssl (tb_dfe, "P");
+  p_col = sqlg_col_dfe (tb_dfe, "P");
+  p_slot = p_col ? p_col->dfe_ssl : NULL;
   if (!p_slot)
     return; /* P is unspecified and but is not accessed */
   ri = sqlg_rdf_inf_node (so->so_sc);
@@ -2125,6 +2215,17 @@ sqlg_trailing_subproperty_inf (sqlo_t * so, data_source_t ** q_head, data_source
   ri->ri_output = p_slot;
   ri->ri_p = p_slot;
   ri->ri_ctx = ctx;
+  if (pred_body_references (so, tb_dfe->_.table.join_test, p_col))
+    {
+      data_source_t * last_with_test = qn_last(ts);
+      while (last_with_test && !last_with_test->src_after_test)
+        last_with_test = qn_prev(q_head, last_with_test);
+      if (last_with_test) /* precaution, NULL should not happen since tb has jt */
+        {
+          ri->src_gen.src_after_test = last_with_test->src_after_test;
+          last_with_test->src_after_test = NULL;
+        }
+    }
 }
 
 
@@ -2509,6 +2610,18 @@ qn_set_after_join_test (data_source_t * qn, code_vec_t tst)
     ((subq_source_t*)qn)->sqs_after_join_test = tst;
 }
 
+data_source_t *
+qn_skip_inits (data_source_t * qn)
+{
+  data_source_t * next;
+  while (qn && (next = qn_next (qn)))
+    {
+      if (!IS_QN (qn, hash_fill_node_input))
+	break;
+      qn = next;
+    }
+  return qn;
+}
 
 outer_seq_end_node_t *
 sqlg_cl_bracket_outer (sqlo_t * so, data_source_t * first)
@@ -2556,7 +2669,7 @@ sqlg_cl_bracket_outer (sqlo_t * so, data_source_t * first)
   {
     data_source_t * qn;
     SQL_NODE_INIT (set_ctr_node_t, sctr, set_ctr_input, set_ctr_free);
-    qn_ins_before (sc, &first, qn_next (first), (data_source_t *) sctr);
+    qn_ins_before (sc, &first, qn_skip_inits (qn_next (first)), (data_source_t *) sctr);
     clb_init (sc->sc_cc, &sctr->clb, 1);
     sctr->sctr_role = SCTR_OJ;
     sctr->sctr_itcl = ssl_new_inst_variable (so->so_sc->sc_cc, "buf_row", DV_ARRAY_OF_POINTER);

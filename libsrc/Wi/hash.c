@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -459,6 +459,8 @@ hi_bp_set (hash_index_t * hi, it_cursor_t *itc, uint32 code, dp_addr_t dp, short
 	  itc->itc_ltrx->lt_error = LTE_NO_DISK;
 	  itc_bust_this_trx (itc, &hb_buf, ITC_BUST_THROW);
 	}
+      if (itc->itc_ltrx && itc->itc_ltrx->lt_client)
+        itc->itc_ltrx->lt_client->cli_activity.da_temp_pages++;
       HI_BUCKET_PTR_PAGE (hi, code) = hb_buf->bd_page;
       memset (hb_buf->bd_buffer + DP_DATA, 0, PAGE_DATA_SZ);
       set_dbg_fprintf ((stdout, "hi_bp_set:new bp: page=%lu\n", (unsigned long) hb_buf->bd_page));
@@ -478,7 +480,7 @@ hi_bp_set (hash_index_t * hi, it_cursor_t *itc, uint32 code, dp_addr_t dp, short
   memcpy (hb_buf->bd_buffer + DP_DATA + ofs, &l_buf, sizeof (int32));
 #endif
   SHORT_SET (hb_buf->bd_buffer + DP_DATA + ofs + sizeof (dp_addr_t), pos);
-  hb_buf->bd_is_dirty = 1;
+  BUF_SET_IS_DIRTY(hb_buf,1);
 
   page_leave_outside_map (hb_buf);
 }
@@ -929,6 +931,8 @@ itc_ha_disk_row (it_cursor_t * itc, buffer_desc_t * buf, hash_area_t * ha, caddr
 	  itc->itc_ltrx->lt_error = LTE_NO_DISK;
 	  itc_bust_this_trx (itc, &buf, ITC_BUST_THROW);
 	}
+      if (itc->itc_ltrx && itc->itc_ltrx->lt_client)
+        itc->itc_ltrx->lt_client->cli_activity.da_temp_pages++;
       if (!tree->it_hash_first)
 	tree->it_hash_first = new_buf->bd_page;
       if (hash_buf)
@@ -1557,7 +1561,7 @@ ha_rehash_row (hash_area_t * ha, index_tree_t * tree, it_cursor_t * itc, buffer_
 
   HI_BUCKET_PTR (hi, code, bp_ref_itc, &hibp, PA_WRITE);
   row = buf->bd_buffer + itc->itc_map_pos - HASH_HEAD_LEN;
-  buf->bd_is_dirty = 1;
+  BUF_SET_IS_DIRTY(buf,1);
   LONG_SET (row + HH_NEXT_DP, hibp.hibp_page);
   code_mask = (unsigned short) ((code >> 9) & 0x7);
   code_mask = code_mask << 13;
@@ -2170,6 +2174,8 @@ runX_begin: ;
 		  set = (SSL_REF == ssl->ssl_type) ? sslr_set_no (qst, ssl, qi->qi_set) : qi->qi_set;
 		  if (dc->dc_nulls && DC_IS_NULL (dc, set))
 		    goto next_mem_col;
+		  if (!IS_BOX_POINTER (*dep_ptr))
+		    *dep_ptr = box_double (*(double*)dep_ptr);
 		  **(double**)dep_ptr += ((double*)dc->dc_values)[set];
 		  goto next_mem_col;
 		}
@@ -2432,6 +2438,8 @@ setp_order_row (setp_node_t * setp, caddr_t * qst)
     {
       /* this node may be invoked from inside itc_row_check.  If so and there is a trx error, come out as an error, not as RST_DEADLOCK.
        * This will cause itc_next to exit its buffer properly */
+      if (LTE_NO_DISK == qi->qi_trx->lt_error)
+        it_temp_write_cancel (tree);
       sqlr_resignal (srv_make_trx_error (qi->qi_trx->lt_error, NULL));
     }
   END_FAIL (ins_itc);
@@ -3493,7 +3501,7 @@ lt_hi_transact (lock_trx_t * lt, int op)
 
 
 void
-hic_clear ()
+hic_clear (void)
 {
   index_tree_t ** p_it;
   caddr_t p_key;

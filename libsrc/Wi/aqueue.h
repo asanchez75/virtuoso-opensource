@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -27,14 +27,14 @@
 typedef struct async_queue_s
 {
   int			aq_ref_count;
-  uint32		aq_ts; /* time of last req */
+  time_msec_t	aq_ts; /* time of last req */
   dk_mutex_t *		aq_mtx;
   basket_t		aq_queue;
   int			aq_max_threads;
   int			aq_n_threads;
-  uint32		aq_req_no;
-  int			aq_anytime_started;
-  int			aq_anytime_timeout;
+  uint32	aq_req_no;
+  time_msec_t	aq_anytime_started;
+  uint32	aq_anytime_timeout;
   char			aq_deleted;
   char			aq_do_self_if_would_wait; /* if the caller thread would block , it will run queued items by itself.  At time of requesting, it wil not run on self */
   char			aq_need_own_thread;
@@ -104,7 +104,7 @@ async_queue_t *aq_allocate (client_connection_t * cli, int n_threads);
 #define AQ_TXN_BRANCH 8
 
 int aq_free (async_queue_t * aq);
-void aq_init ();
+void aq_init (void);
 typedef void (*aq_cleanup_t) (caddr_t);
 void aq_wait_all_in_qi (async_queue_t * aq, caddr_t * inst, caddr_t * err_ret, aq_cleanup_t clup);
 void aq_check_duplicate (async_queue_t * aq, caddr_t val);

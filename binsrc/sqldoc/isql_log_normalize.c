@@ -3,7 +3,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *  
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *  
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -55,6 +55,8 @@ typedef struct cut_env_s
 } cut_env_t;
 
 static char errmsg_buf[1000];
+
+char *strdup(const char *s);
 
 void readtextfile (const char *src_name, char **bufptr, size_t *lenptr, char **err_ret)
 {

@@ -2,7 +2,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2020 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -63,11 +63,16 @@ create procedure WS.WS.SPARQL_ENDPOINT_HTML_DOCTYPE ()
 
 create procedure WS.WS.SPARQL_ENDPOINT_HTML_HEAD (in title varchar)
 { ?>
-    <meta charset="utf-8">
-    <meta name="viewport"  content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <meta name="Copyright" content="Copyright &copy; <?V year(now()) ?> OpenLink Software">
-    <meta name="Keywords"  content="OpenLink Virtuoso Sparql">
+    <meta charset="utf-8" />
+    <meta name="viewport"  content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="Copyright" content="Copyright &#169; <?V year(now()) ?> OpenLink Software" />
+    <meta name="Keywords"  content="OpenLink Virtuoso Sparql" />
     <title><?V title ?></title>
+
+    <link rel="icon" href="/favicon.ico?v=1" sizes="any" />
+    <link rel="icon" href="/favicon/favicon.svg?v=1" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/favicon/apple-touch-icon-180x180.png?v=1" />
+    <link rel="manifest" href="/favicon/manifest.webmanifest?v=1" />
 <?vsp
 }
 ;
@@ -76,8 +81,8 @@ create procedure WS.WS.SPARQL_ENDPOINT_HTML_HEAD (in title varchar)
 create procedure WS.WS.SPARQL_ENDPOINT_STYLE (in enable_bootstrap integer := 0)
 {
     if (enable_bootstrap) {
-        http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/css/', 'bootstrap.min.css',
-            'sha512-P5MgMn1jBN01asBgU0z60Qk4QxiXo86+wlFahKrsQf37c9cro517WzVSPPV1tDKzhku2iJ2FVgL67wG03SGnNA=='));
+        http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.2.3/css/', 'bootstrap.min.css',
+            'sha512-SbiR/eusphKoMVVXysTKG/7VseWii+Y3FdHrt0EpKgpToZeemhqHeZeLWLhJutz/2ut2Vw1uQEj2MbRF+TVBUA=='));
         return;
     }
 ?>
@@ -218,10 +223,13 @@ create procedure WS.WS.SPARQL_ENDPOINT_JAVASCRIPT (in can_cxml integer, in can_q
     function do_format_select (query_obg) {
         var query = query_obg.value;
         var format = query_obg.form.format;
-        var prev_value = format.options[format.selectedIndex].value;
+        var prev_value = 0;
         var prev_format = curr_format;
         var ctr = 0;
         var query_is_construct = (query.match(/\bconstruct\b\s/i) || query.match(/\bdescribe\b\s/i));
+
+        if (format.selectedIndex >= 0)
+          prev_value = format.options[format.selectedIndex].value;
 
         if (query_is_construct && curr_format != 2) {
             for (ctr = format.options.length - 1; ctr >= 0; ctr = ctr - 1)
@@ -381,7 +389,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_JAVASCRIPT (in can_cxml integer, in can_q
     function sparqlSubmitForm () {
         var link = sparqlGenerateLink(1);
 
-        if (max_url > 0 && max_url < link.length) {
+        if (link.length > 14000 || (max_url > 0 && max_url < link.length)) {
             $('#sparql_form').attr('method', 'post');
         }
         document.forms['sparql_form'].submit();
@@ -404,11 +412,9 @@ create procedure WS.WS.SPARQL_ENDPOINT_JAVASCRIPT (in can_cxml integer, in can_q
 
     function sparqlShowAlert (obj) {
         var html = '<div class="alert alert-' + obj.class + ' alert-dismissible" role="alert">' +
-            '   <strong>' + obj.message + '</strong>' +
-            '       <button class="close" type="button" data-dismiss="alert" aria-label="Close">' +
-            '           <span aria-hidden="true">×</span>' +
-            '       </button>'
-        '   </div>';
+            '<div><strong>' + obj.message + '</strong></div>' +
+            '<button class="btn-close" type="button" data-bs-dismiss="alert" aria-label="Close"></button>' +
+            '</div>';
 
         $('#alert').append (html);
         if (obj.timeout > 0) sparqlAlertTimeout (obj.timeout);
@@ -425,8 +431,11 @@ create procedure WS.WS.SPARQL_ENDPOINT_JAVASCRIPT (in can_cxml integer, in can_q
         }
         var b = document.getElementById ("explain");
         if (b) change_run_button (b);
+        var q = document.getElementById ("query");
+        if (q) do_format_select (q);
 
         sparqlSubmitFormWithCtrlEnter ();
+
     }
     /*]]>*/
     </script>
@@ -437,20 +446,62 @@ create procedure WS.WS.SPARQL_ENDPOINT_JAVASCRIPT (in can_cxml integer, in can_q
 
 create procedure WS.WS.SPARQL_ENDPOINT_FOOTER ()
 { ?>
-    <footer id="footer" class="page-footer small">
-    <div class="footer-copyright text-center">
-        Copyright &copy; <?V year(now()) ?> <a href="https://virtuoso.openlinksw.com/">OpenLink Software</a>
-        <br>
-        Virtuoso version <?V sys_stat('st_dbms_ver') ?> on <?V sys_stat('st_build_opsys_id') ?> (<?V host_id() ?>)
+    <footer id="footer" class="small text-muted">
+    <div class="text-center">
+        Copyright &#169; <?V year(now()) ?> <a href="https://www.openlinksw.com/">OpenLink Software</a>
+        <br/>
+        <a href="https://virtuoso.openlinksw.com/">Virtuoso</a> version <?V sys_stat('st_dbms_ver') ?> (<?V sys_stat('git_head') ?>) on <?V sys_stat('st_build_opsys_id') ?> (<?V host_id() ?>)
 <?vsp
+    declare rss any;
+
+    rss := getrusage();
+
     if (1 = sys_stat('cl_run_local_only'))
-        http(sprintf ('Single Server Edition (%s total memory)\n', mem_hum_size (mem_info_cl())));
+    {
+        http(sprintf ('Single Server Edition (%s total memory', mem_hum_size (mem_info_cl())));
+	if (rss <> 0)
+          http (sprintf (', %s memory in use', mem_hum_size (rss[2] * 1024)));
+        http (')\n');
+    }
     else
         http(sprintf('Cluster Edition (%d server processes, %s total memory)\n', sys_stat('cl_n_hosts'), mem_hum_size (mem_info_cl())));
 ?>
     </div>
     </footer>
 <?vsp
+}
+;
+
+create procedure WS.WS.SPARQL_ENDPOINT_SVC_DESC ()
+{
+  declare ses any;
+  ses := string_output ();
+  http ('    <div style="display:none">\n', ses);
+  http ('       <div class="description" about="#service" typeof="sd:Service">\n', ses);
+  http (sprintf ('          <div rel="sd:endpoint" resource="%s://%{WSHost}s/sparql"></div>\n',
+		case when is_https_ctx () then 'https' else 'http' end, ses), ses);
+  http ('          <div rel="sd:feature"\n', ses);
+  http ('               resource="http://www.w3.org/ns/sparql-service-description#UnionDefaultGraph"></div>\n', ses);
+  http ('          <div rel="sd:feature"\n', ses);
+  http ('               resource="http://www.w3.org/ns/sparql-service-description#DereferencesURIs"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat" resource="http://www.w3.org/ns/formats/RDF_XML"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat" resource="http://www.w3.org/ns/formats/Turtle"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat"\n', ses);
+  http ('               resource="http://www.w3.org/ns/formats/SPARQL_Results_CSV"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat" resource="http://www.w3.org/ns/formats/N-Triples"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat" resource="http://www.w3.org/ns/formats/N3"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat"\n', ses);
+  http ('               resource="http://www.w3.org/ns/formats/SPARQL_Results_JSON"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat" resource="http://www.w3.org/ns/formats/RDFa"></div>\n', ses);
+  http ('          <div rel="sd:resultFormat"\n', ses);
+  http ('               resource="http://www.w3.org/ns/formats/SPARQL_Results_XML"></div>\n', ses);
+  http ('          <div rel="sd:supportedLanguage"\n', ses);
+  http ('               resource="http://www.w3.org/ns/sparql-service-description#SPARQL10Query"></div>\n', ses);
+  http (sprintf ('          <div rel="sd:url" resource="%s://%{WSHost}s/sparql"></div>\n',
+		case when is_https_ctx () then 'https' else 'http' end, ses), ses);
+  http ('       </div>\n', ses);
+  http ('    </div>\n', ses);
+  return ses;
 }
 ;
 
@@ -543,7 +594,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_FORMAT_OPTS (in can_cxml integer, in can_
 
     foreach (any x in opts) do
     {
-        http( sprintf ('<option value="%V" %s>%V</option>\n', x[1], case when format = x[1] then 'selected' else '' end , x[0]));
+        http( sprintf ('<option value="%V" %s>%V</option>\n', x[1], case when format = x[1] then 'selected="selected"' else '' end , x[0]));
     }
 }
 ;
@@ -565,7 +616,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_SPONGE_OPTS (in params varchar)
 
     foreach (any x in opts) do
     {
-        http(sprintf ('<option value="%V" %s>%V</option>\n', x[0], case when s_param = x[0] then 'selected' else '' end , x[1]));
+        http(sprintf ('<option value="%V" %s>%V</option>\n', x[0], case when s_param = x[0] then 'selected="selected"' else '' end , x[1]));
     }
 }
 ;
@@ -620,22 +671,23 @@ create procedure WS.WS.SPARQL_ENDPOINT_CXML_OPTION (in can_pivot integer, in par
     foreach (any x in opts) do
     {
         if ('LOCAL_PIVOT' <> x[0] or can_pivot)
-            http(sprintf ('<option value="%V" %s>%V</option>\n', x[0], case when val = x[0] then 'selected' else '' end , x[1]));
+            http(sprintf ('<option value="%V" %s>%V</option>\n', x[0], case when val = x[0] then 'selected="selected"' else '' end , x[1]));
     }
 
-    if (use_label) http ('</select><br>\n');
+    if (use_label) http ('</select><br/>\n');
 }
 ;
 
 
 create procedure WS.WS.SPARQL_ENDPOINT_HTML_MENU( in title varchar, in display_submenu integer := 1)
 { ?>
-    <nav class="navbar navbar-expand-md sticky-top navbar-light bg-light">
+    <nav class="navbar navbar-expand-md sticky-top bg-light">
+    <div class="container-lg">
         <a class="navbar-brand" href="/sparql"><?V title ?></a>
         <button class="navbar-toggler"
             type="button"
-            data-toggle="collapse"
-            data-target="#navbarSupportedContent"
+            data-bs-toggle="collapse"
+            data-bs-target="#navbarSupportedContent"
             aria-controls="navbarSupportedContent"
             aria-expanded="false"
             aria-label="Toggle navigation">
@@ -644,21 +696,25 @@ create procedure WS.WS.SPARQL_ENDPOINT_HTML_MENU( in title varchar, in display_s
 
 <?vsp if (display_submenu) { ?>
         <div class="collapse navbar-collapse" id="navbarSupportedContent">
-            <ul class="navbar-nav mr-auto">
+            <ul class="navbar-nav me-auto">
             <li class="nav-item"><a class="nav-link" href="/sparql/?help=intro">About</a></li>
             <li class="nav-item dropdown">
-                <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" data-toggle="dropdown"
-                    aria-haspopup="true" aria-expanded="false">Tables</a>
-                <div class="dropdown-menu" aria-labelledby="navbarDropdown">
-                    <a class="nav-item nav-link"        href="/sparql/?help=nsdecl">Namespace&nbsp;Prefixes</a>
-                    <a class="nav-item nav-link"        href="/sparql/?help=rdfinf">Inference&nbsp;Rules</a>
-                    <a class="nav-item nav-link"        href="/sparql/?help=macrolibs">Macros</a>
-                    <a class="nav-item nav-link"        href="/sparql/?help=views">RDF Views</a>
-                </div>
+                <a class="nav-link dropdown-toggle"
+                    href="#"
+                    id="navbarDropdown"
+                    role="button"
+                    data-bs-toggle="dropdown"
+                    aria-expanded="false">Tables</a>
+                  <ul class="dropdown-menu" aria-labelledby="navbarDropdown">
+                      <li><a class="dropdown-item"        href="/sparql/?help=nsdecl">Namespace&#160;Prefixes</a></li>
+                      <li><a class="dropdown-item"        href="/sparql/?help=rdfinf">Inference&#160;Rules</a></li>
+                      <li><a class="dropdown-item"        href="/sparql/?help=macrolibs">Macros</a></li>
+                      <li><a class="dropdown-item"        href="/sparql/?help=views">RDF Views</a></li>
+                  </ul>
             </li>
             </ul>
 
-            <ul class="navbar-nav">
+            <ul class="navbar-nav ms-auto">
 <?vsp if (DB.DBA.VAD_CHECK_VERSION('conductor') is not null) { ?>
             <li class="nav-item"><a class="nav-item nav-link"        href="/conductor">Conductor</a></li>
 <?vsp } ?>
@@ -671,6 +727,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_HTML_MENU( in title varchar, in display_s
             </ul>
         </div>
 <?vsp } ?>
+    </div>
     </nav>
 <?vsp
 }
@@ -681,11 +738,11 @@ create procedure WS.WS.SPARQL_ENDPOINT_HTML_OPTION (in lbl varchar, in help varc
 {
     declare color varchar;
 
-    color := 'badge-light';
+    color := 'bg-light text-secondary';
     if (enabled)
-        color := 'badge-dark';
+        color := 'bg-light text-primary';
 
-    http (sprintf ('<a href="/sparql/?help=%U" class="badge badge-pill %s">%V</a>\n', help, color, lbl));
+    http (sprintf ('<a href="/sparql/?help=%U" class="badge rounded-pill %s text-decoration-none" role="button">%V</a>&#160;\n', help, color, lbl));
 }
 ;
 
@@ -726,6 +783,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
     in ini_dflt_graph varchar,
     in def_qry varchar,
     in timeout integer,
+    in max_timeout integer,
     in signal_void varchar,
     in signal_unconnected varchar,
     in quiet_geo varchar,
@@ -755,7 +813,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
     endpoint_xsl := registry_get ('sparql_endpoint_xsl', '');
 
     if (length(endpoint_xsl))
-        http_xslt(endpoint_xsl);
+        http_xslt(endpoint_xsl, null, '');
 
 
     --
@@ -807,7 +865,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
     http('</head>\n');
 
     http('<body onload="sparql_endpoint_init()">\n');
-    http('<div class="container">\n');
+    http('<div class="container-lg">\n');
 
     WS.WS.SPARQL_ENDPOINT_HTML_MENU('SPARQL Query Editor');
 
@@ -821,12 +879,12 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
     --
     --  Show which options are enabled/disabled
     --
-    http ('<div class="d-flex justify-content-end small">\n');
-    http ('<span class="badge">Extensions:</span>\n');
+    http ('<div class="d-flex justify-content-end">\n');
+    http ('<span class="badge text-dark">Extensions:</span>&#160;\n');
     WS.WS.SPARQL_ENDPOINT_HTML_OPTION('cxml', 'enable_cxml', can_cxml);
     WS.WS.SPARQL_ENDPOINT_HTML_OPTION('save to dav', 'enable_det', isnotnull(save_dir));
     WS.WS.SPARQL_ENDPOINT_HTML_OPTION('sponge', 'enable_sponge', can_sponge);
-    http ('<span class="badge"> User: <b>' || user_id || '</b></span>\n');
+    http ('<span class="badge bg-light text-dark"> User: <b>' || user_id || '</b></span>\n');
     http ('</div>\n');
 
 
@@ -834,46 +892,49 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
     --  Main
     --
     http ('<main id="main">\n');
-    http ('<form id="sparql_form" action="/sparql" method="get">\n');
+    http ('<form id="sparql_form" method="get" onreset="javascript:format_select(this.elements.query)">\n');
 ?>
 
     <fieldset class="">
 
-        <div class="form-group">
-            <label for="default-graph-uri">Default Data Set Name (Graph IRI)</label><br>
-            <input class="form-control form-control-sm" type="url" name="default-graph-uri" id="default-graph-uri" value="<?V ini_dflt_graph ?>">
+        <div class="mb-3">
+            <label for="default-graph-uri">Default Data Set Name (Graph IRI)</label>
+            <input class="form-control form-control-sm" type="url" name="default-graph-uri" id="default-graph-uri" value="<?V ini_dflt_graph ?>"/>
         </div>
 
-        <div class="form-group">
-            <label for="query">Query Text</label><br>
-            <textarea class="form-control" rows="10" name="query" id="query" onchange="javascript:format_select(this)"
-                onkeyup="javascript:format_select(this)"><?V def_qry ?></textarea>
+        <div class="mb-3">
+            <label for="query">Query Text</label>
+            <textarea class="form-control" rows="10" name="query" id="query"
+                onchange="javascript:do_format_select(this)"
+                onkeyup="javascript:format_select(this)">
+                <?V def_qry ?>
+                </textarea>
         </div>
 
-        <div class="form-group row">
+        <div class="mb-3 row">
             <label class="col-lg-2 col-form-label" for="format">Results Format</label>
             <div class="col-lg-10">
-                <select class="form-control form-control-sm" name="format" id="format" onchange="javascript:format_change(this)">
+                <select class="form-select form-select-sm" name="format" id="format" onchange="javascript:format_change(this)">
 <?vsp           WS.WS.SPARQL_ENDPOINT_FORMAT_OPTS (can_cxml, can_qrcode, params, def_qry); ?>
                 </select>
             </div>
         </div>
 
         <div>
-            <input class="btn btn-primary" type="submit" id="run" value="Execute Query">
-            <input class="btn btn-light" type="reset" value="Reset" id="reset">
+            <input class="btn btn-primary" type="submit" onclick="javascript:sparqlSubmitForm()" id="run" value="Execute Query"/>
+            <input class="btn btn-light" type="reset" value="Reset" id="reset"/>
         </div>
     </fieldset>
 
-    <hr>
+    <hr />
 
     <fieldset class="" id="options">
 
 <?vsp if (can_sponge) { ?>
-        <div class="form-group row">
+        <div class="input-group mb-3 row">
             <label class="col-lg-2 col-form-label" for="should-sponge">Sponging</label>
             <div class="col-lg-10">
-            <select class="form-control form-control-sm" name="should-sponge" id="should-sponge">
+            <select class="form-select form-select-sm" name="should-sponge" id="should-sponge">
 <?vsp       WS.WS.SPARQL_ENDPOINT_SPONGE_OPTS (params); ?>
             </select>
             </div>
@@ -883,17 +944,17 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
 
 <?vsp if (can_cxml) { ?>
         <div id="cxml">
-        <div class="form-group row">
+        <div class="input-group mb-3 row">
             <label class="col-lg-2 col-form-label" for="CXML_redir_for_subjs">External resource link</label>
             <div class="col-lg-10">
-                <select class="form-control form-control-sm" name="CXML_redir_for_subjs" id="CXML_redir_for_subjs">
+                <select class="form-select form-select-sm" name="CXML_redir_for_subjs" id="CXML_redir_for_subjs">
 <?vsp           WS.WS.SPARQL_ENDPOINT_CXML_OPTION (can_pivot, params, 'CXML_redir_for_subjs', 0); ?>
                 </select>
             </div>
 
             <label for="CXML_redir_for_hrefs" class="col-lg-2 col-form-label">Facet link behavior</label>
             <div class="col-lg-10">
-                <select class="form-control form-control-sm" name="CXML_redir_for_hrefs" id="CXML_redir_for_hrefs">
+                <select class="form-select form-select-sm" name="CXML_redir_for_hrefs" id="CXML_redir_for_hrefs">
 <?vsp           WS.WS.SPARQL_ENDPOINT_CXML_OPTION (can_pivot, params, 'CXML_redir_for_hrefs', 0); ?>
                 </select>
             </div>
@@ -901,49 +962,53 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
         </div>
 <?vsp } ?>
 
-        <div class="form-group row">
+        <div class="input-group mb-3 row">
             <label for="timeout" class="col-lg-2 col-form-label">Execution timeout</label>
             <div class="col-lg-10">
                 <div class="input-group input-group-sm">
-                <input class="form-control" name="timeout" id="timeout" type="number" value="<?V timeout ?>" />
-                <div class="input-group-append"><span class="input-group-text">milliseconds</span></div>
-            </div>
+                    <input class="form-control" name="timeout" id="timeout" type="number"
+                        value="<?V timeout ?>"
+                        min="0"
+                        <?vsp if (max_timeout > 0) { http(sprintf('max="%d"', max_timeout)); } ?>
+                        />
+                    <span class="input-group-text">milliseconds</span>
+                </div>
             </div>
         </div>
 
-        <div class="form-group row">
+        <div class="input-group mb-3 row">
             <div class="col-form-label col-lg-2 pt-0">Options</div>
             <div class="col-lg-10">
 
                 <div class="form-check">
                     <input class="form-check-input" name="signal_void" id="signal_void" type="checkbox"
-                        <?V case (signal_void) when '' then '' else 'checked' end ?> >
+                        <?vsp http( case (signal_void) when '' then '' else 'checked="checked"' end); ?> />
                     <label for="signal_void" class="form-check-label">Strict checking of void variables</label>
                 </div>
 
 <?vsp if (virtuoso_major > 7) { ?>
                 <div class="form-check">
                     <input class="form-check-input" name="signal_unconnected" id="signal_unconnected" type="checkbox"
-                        <?= case (signal_unconnected) when '' then '' else 'checked' end ?> >
+                        <?vsp http( case (signal_unconnected) when '' then '' else 'checked="checked"' end ); ?> />
                     <label for="signal_unconnected" class="form-check-label">Strict checking of variable names used in multiple clauses but not logically connected to each other</label>
                 </div>
 
                 <div class="form-check">
                     <input class="form-check-input" name="quiet_geo" id="quiet_geo" type="checkbox"
-                        <?= case (quiet_geo) when '' then '' else 'checked' end ?> >
+                        <?vsp http( case (quiet_geo) when '' then '' else 'checked="checked"' end ); ?> />
                     <label for="quiet_geo" class="form-check-label">Suppress errors on wrong geometries and errors on geometrical operators (failed operations will return NULL)</label>
                 </div>
 <?vsp } ?>
 
                 <div class="form-check">
                     <input class="form-check-input" name="log_debug_info" id="log_debug_info" type="checkbox"
-                        <?= case (log_debug_info) when '' then '' else 'checked' end ?> >
+                        <?vsp http( case (log_debug_info) when '' then '' else 'checked="checked"' end ); ?> />
                     <label for="log_debug_info" class="form-check-label">Log debug info at the end of output (has no effect on some queries and output formats)</label>
                 </div>
 
                 <div class="form-check">
                     <input class="form-check-input" name="explain" id="explain" onclick="javascript:change_run_button(this)" type="checkbox"
-                        <?= case (explain_report) when '' then '' else 'checked' end ?> >
+                        <?vsp http( case (explain_report) when '' then '' else 'checked="checked"' end ); ?> />
                     <label for="explain" class="form-check-label">Generate SPARQL compilation report (instead of executing the query)</label>
                 </div>
 
@@ -951,31 +1016,31 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
         </div>
 
 <?vsp if (save_dir is not null) { ?>
-        <div class="form-group row">
+        <div class="input-group mb-3 row">
             <div class="col-form-label col-lg-2 pt-0">Save to DAV</div>
             <div class="col-lg-10">
                 <div class="form-check">
-                    <input class="form-check-input" name="save" id="save" type="checkbox" onclick="savedav_change(this)">
+                    <input class="form-check-input" name="save" id="save" type="checkbox" onclick="savedav_change(this)"/>
                     <label for="save" class="form-check-label">Save resultset to WebDAV folder on the server</label>
                 </div>
 
                 <div id="savefs" style="display: none">
 
-                    <div class="form-group row">
-                        <input type="hidden" id="dname" name="dname" value="<?V save_dir ?>">
+                    <div class="input-group mb-3 row">
+                        <input type="hidden" id="dname" name="dname" value="<?V save_dir ?>"/>
                         <label for="fname" class="col-lg-1 col-form-label">Filename</label>
                         <div class="col-lg-9">
                             <div class="input-group input-group-sm">
                                 <div class="input-group-prepend"><span class="input-group-text"><?V save_dir ?></span></div>
-                                <input class="form-control" type="text" id="fname" name="fname">
+                                <input class="form-control" type="text" id="fname" name="fname"/>
                             </div>
                         </div>
                     </div>
 
-                    <input type="checkbox" name="dav_refresh" id="dav_refresh" <?V case when (dav_refresh is null) then '' else 'checked' end ?> >
+                    <input type="checkbox" name="dav_refresh" id="dav_refresh" <?vsp http( case when (dav_refresh is null) then '' else 'checked="checked"' end ); ?> />
                     <label class="ckb" for="dav_refresh">Refresh periodically</label>
-                    <br>
-                    <input type="checkbox" name="dav_overwrite" id="dav_overwrite" <?V case when (overwrite is null or overwrite = '0') then '' else 'checked' end ?> >
+                    <br/>
+                    <input type="checkbox" name="dav_overwrite" id="dav_overwrite" <?vsp http( case when (overwrite is null or overwrite = '0') then '' else 'checked="checked"' end ); ?> />
                     <label class="ckb" for="dav_overwrite">Overwrite if exists</label>
                 </div>
             </div>
@@ -1004,10 +1069,10 @@ create procedure WS.WS.SPARQL_ENDPOINT_GENERATE_FORM (
     --  Javascript
     --
     http('<div id="sparql-scripts">\n');
-    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/', 'jquery.slim.min.js',
-            'sha512-/DXTXr6nQodMUiq+IUJYCt2PPOUjrHJ9wFrqpJ3XkgPNOZVfMok7cRw6CSxyCQxXn6ozlESsSh1/sMCTF1rL/g=='));
-    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/js/', 'bootstrap.bundle.min.js',
-            'sha512-wV7Yj1alIZDqZFCUQJy85VN+qvEIly93fIQAN7iqDFCPEucLCeNFz4r35FCo9s6WrpdDQPi80xbljXB8Bjtvcg=='));
+    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.2.3/js/', 'bootstrap.bundle.min.js',
+            'sha512-i9cEfJwUwViEPFKdC1enz4ZRGBj8YQo6QByFTF92YXHi7waCqyexvRD75S5NVTsSiTv7rKWqG9Y5eFxmRsOn0A=='));
+    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.1/', 'jquery.slim.min.js',
+            'sha512-yBpuflZmP5lwMzZ03hiCLzA94N0K2vgBtJgqQ2E1meJzmIBfjbb7k4Y23k2i2c/rIeSUGc7jojyIY5waK3ZxCQ=='));
 
     WS.WS.SPARQL_ENDPOINT_JAVASCRIPT(can_cxml, can_qrcode);
 
@@ -1047,7 +1112,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_NSDECL()
 create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_RDFINF()
 { ?>
     <h3>Inference Rules</h3>
-    <table class="table table-striped table-sm table-compact">
+    <table class="table table-striped table-sm">
     <thead>
         <tr>
             <th scope="col">Name</th>
@@ -1112,9 +1177,10 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_INTRO()
 
 create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_SPONGE(inout lines any)
 {
-    declare host_ur varchar;
+    declare host_ur, _http varchar;
     host_ur := registry_get ('URIQADefaultHost');
     host_ur := http_request_header (lines, 'Host', null, host_ur);
+    _http := case when is_https_ctx() then 'https' else 'http' end;
 ?>
     <h3>How To Enable Sponge?</h3>
     <p>When a new Virtuoso server is installed, the default security restrictions do not
@@ -1127,7 +1193,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_SPONGE(inout lines any)
     if (not isstring (host_ur))
       http('http://host:port/conductor .');
     else
-      http( sprintf('<a href="http://%s/conductor">http://%s/conductor</a>.', host_ur, host_ur));
+      http( sprintf('<a href="%s://%s/conductor">%s://%s/conductor</a>.', _http, host_ur, _http, host_ur));
 ?>
     </li>
     <li>Login as dba user.</li>
@@ -1198,7 +1264,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_VIEWS()
 {
     declare storage_is_dflt integer;
     storage_is_dflt := 0;
-    if (exists (sparql define input:storage "" ask from virtrdf:
+    if ((sparql define input:storage "" ask from virtrdf:
         where {
             virtrdf:DefaultQuadStorage a virtrdf:QuadStorage    ;
                 virtrdf:qsDefaultMap virtrdf:DefaultQuadMap     ;
@@ -1295,7 +1361,7 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP_MACROS()
             macro_list := sparql_list_macro_in_lib (id_to_iri ("sml"));
             goto macro_compilation_done;
 macro_compilation_error:
-            http ('  <p>This macro library is not available due to error<br><pre>' || __SQL_STATE || ': '); http_value (__SQL_MESSAGE); http ('</pre></p>');
+            http ('  <p>This macro library is not available due to error<br/><pre>' || __SQL_STATE || ': '); http_value (__SQL_MESSAGE); http ('</pre></p>');
         }
 macro_compilation_done:
         if (macro_list is not null) {
@@ -1410,9 +1476,9 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP (inout path varchar, inout par
 
 
     http('<body>\n');
-    http('<div class="container">\n');
+    http('<div class="container-md">\n');
 
-    WS.WS.SPARQL_ENDPOINT_HTML_MENU('SPARQL Query Editor');
+    WS.WS.SPARQL_ENDPOINT_HTML_MENU('SPARQL Query Editor', 0);
 
     http ('<div id="help">\n');
     if (help_topic='intro')
@@ -1449,9 +1515,11 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP (inout path varchar, inout par
     }
     else
     {
-        DB.DBA.SPARQL_PROTOCOL_ERROR_REPORT (path, params, lines,
-            '500', 'Request Failed',
-            '(no query)', '00000', 'Invalid help topic', format);
+        http_rewrite();
+        http_request_status ('HTTP/1.1 500 Request Failed');
+        http_header ('Content-Type: text/plain\r\n');
+        http ('Virtuoso SPARQL endpoint: Unknown help topic\r\n');
+        return;
     }
 
     http('');
@@ -1463,10 +1531,10 @@ create procedure WS.WS.SPARQL_ENDPOINT_BRIEF_HELP (inout path varchar, inout par
     http('</div>\n');
 
     http('<div id="sparql-scripts">\n');
-    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/', 'jquery.slim.min.js',
-            'sha512-/DXTXr6nQodMUiq+IUJYCt2PPOUjrHJ9wFrqpJ3XkgPNOZVfMok7cRw6CSxyCQxXn6ozlESsSh1/sMCTF1rL/g=='));
-    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/js/', 'bootstrap.bundle.min.js',
-            'sha512-wV7Yj1alIZDqZFCUQJy85VN+qvEIly93fIQAN7iqDFCPEucLCeNFz4r35FCo9s6WrpdDQPi80xbljXB8Bjtvcg=='));
+    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.2.3/js/', 'bootstrap.bundle.min.js',
+            'sha512-i9cEfJwUwViEPFKdC1enz4ZRGBj8YQo6QByFTF92YXHi7waCqyexvRD75S5NVTsSiTv7rKWqG9Y5eFxmRsOn0A=='));
+    http (WS.WS.SPARQL_ENDPOINT_CDN ('https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.1/', 'jquery.slim.min.js',
+            'sha512-yBpuflZmP5lwMzZ03hiCLzA94N0K2vgBtJgqQ2E1meJzmIBfjbb7k4Y23k2i2c/rIeSUGc7jojyIY5waK3ZxCQ=='));
     http('</div>');
 
     http('</body>\n');
@@ -1523,7 +1591,7 @@ detalize_done:
 
     <h5>SPARQL query translated to SQL</h5>
     <p>
-    <i>For security reasons, code responsible for graph-level security is not generated and some account-specific data are intentionally made wrong.</i>
+    <i>For security reasons, code responsible for graph-level security is not generated and some account-specific data is deliberately obfuscated.</i>
 <?vsp
     whenever sqlstate '*' goto sql_text_error;
     report := sparql_to_sql_text (concat ('{ define sql:comments 0 ', full_query, '\n}'));
@@ -1619,10 +1687,10 @@ create procedure WS.WS.SPARQL_RESULT_HTML5_OUTPUT_BEGIN (in title varchar, inout
     http_value(title, 0, ses);
     http ('</title>\n', ses);
 
-    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/css/', 'bootstrap.min.css',
-            'sha512-P5MgMn1jBN01asBgU0z60Qk4QxiXo86+wlFahKrsQf37c9cro517WzVSPPV1tDKzhku2iJ2FVgL67wG03SGnNA=='), ses);
-    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.4.0/font/', 'bootstrap-icons.min.css',
-            'sha512-jNfYp+q76zAGok++m0PjqlsP7xwJSnadvhhsL7gzzfjbXTqqOq+FmEtplSXGVI5uzKq7FrNimWaoc8ubP7PT5w=='), ses);
+    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.2.3/css/', 'bootstrap.min.css',
+            'sha512-SbiR/eusphKoMVVXysTKG/7VseWii+Y3FdHrt0EpKgpToZeemhqHeZeLWLhJutz/2ut2Vw1uQEj2MbRF+TVBUA=='), ses);
+    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.10.3/font/', 'bootstrap-icons.min.css',
+            'sha512-YFENbnqHbCRmJt5d+9lHimyEMt8LKSNTMLSaHjvsclnZGICeY/0KYEeiHwD1Ux4Tcao0h60tdcMv+0GljvWyHg=='), ses);
 
     http ('</head>\n', ses);
     http ('<body>\n', ses);
@@ -1672,10 +1740,10 @@ create procedure WS.WS.SPARQL_RESULT_XHTML_OUTPUT_BEGIN (in title varchar, inout
     http_value(title, 0, ses);
     http ('</title>\n', ses);
 
-    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/css/', 'bootstrap.min.css',
-            'sha512-P5MgMn1jBN01asBgU0z60Qk4QxiXo86+wlFahKrsQf37c9cro517WzVSPPV1tDKzhku2iJ2FVgL67wG03SGnNA==', 1), ses);
-    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.4.0/font/', 'bootstrap-icons.min.css',
-            'sha512-jNfYp+q76zAGok++m0PjqlsP7xwJSnadvhhsL7gzzfjbXTqqOq+FmEtplSXGVI5uzKq7FrNimWaoc8ubP7PT5w==', 1), ses);
+    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.2.3/css/', 'bootstrap.min.css',
+            'sha512-SbiR/eusphKoMVVXysTKG/7VseWii+Y3FdHrt0EpKgpToZeemhqHeZeLWLhJutz/2ut2Vw1uQEj2MbRF+TVBUA=='));
+    http (WS.WS.SPARQL_ENDPOINT_CDN('https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.10.3/font/', 'bootstrap-icons.min.css',
+            'sha512-YFENbnqHbCRmJt5d+9lHimyEMt8LKSNTMLSaHjvsclnZGICeY/0KYEeiHwD1Ux4Tcao0h60tdcMv+0GljvWyHg=='), ses);
 
     http ('</head>\n', ses);
     http ('<body>\n', ses);

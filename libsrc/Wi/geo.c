@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1342,7 +1342,7 @@ geo_parse_wkt (char *text, caddr_t * err_ret)
 	break;
       if (2 != sscanf (par + 6, "%20s %20s", ns1, ns2))
 	break;
-      if (2 != sscanf (par + 6, "%lg %lg", &x, &y))
+      if (2 != sscanf (par + 6, "%lf %lf", &x, &y))
 	break;
       g = geo_point (x, y);
       if (!(strlen (ns1) > 8 && strlen (ns2) > 8))
@@ -1636,7 +1636,7 @@ dbg_geo_to_text (caddr_t x)
 dk_mutex_t *geo_reg_mtx;
 
 void
-geo_init ()
+geo_init (void)
 {
   bif_define_ex ("geo_insert"		, bif_geo_insert						, BMD_USES_INDEX, BMD_NEED_ENLIST, BMD_DONE);
   bif_define_ex ("geo_delete"		, bif_geo_delete						, BMD_USES_INDEX, BMD_NEED_ENLIST, BMD_DONE);

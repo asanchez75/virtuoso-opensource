@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -406,8 +406,8 @@ sqlg_qf_nodes_env (sql_comp_t * sc, query_frag_t * qf, dk_hash_t * local_refs, d
 void ref_ssls (dk_hash_t * ht, state_slot_t ** ssls);
 
 
-int 
-ssl_arr_cmp (void * s1, void * s2)
+static int
+ssl_arr_cmp (const void * s1, const void * s2)
 {
   state_slot_t * ssl1 = *(state_slot_t**)s1;
   state_slot_t * ssl2 = *(state_slot_t**)s2;

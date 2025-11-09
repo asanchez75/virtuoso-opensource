@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *  
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *  
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -115,6 +115,7 @@ extern char *http_cli_proxy_except;
 extern int32 http_enable_client_cache;
 extern int32 ws_write_timeout;
 extern int32 log_proc_overwrite;
+extern int32 log_sql_code_init;
 extern char * backup_ignore_keys;
 
 #ifdef _SSL
@@ -124,6 +125,7 @@ extern char *https_key;
 extern char *https_extra;
 extern char *https_dhparam;
 extern char *https_ecdh_curve;
+extern char *https_csp;
 extern int32 https_hsts_max_age;
 extern int32 https_client_verify;
 extern int32 https_client_verify_depth;
@@ -136,6 +138,8 @@ extern char *c_ssl_server_port;
 extern char *c_ssl_server_cert;
 extern char *c_ssl_server_key;
 extern char *c_ssl_server_extra_certs;
+extern int32 c_ssl_read_timeout;
+extern int32 c_ssl_write_timeout;
 extern int32 ssl_server_verify;
 extern int32 ssl_server_verify_depth;
 extern char *ssl_server_verify_file;
@@ -161,15 +165,17 @@ extern long vdb_use_global_pool; /* from sqlrrun.c */
 extern unsigned long vdb_oracle_catalog_fix; /* from odbccat.c */
 extern long vdb_attach_autocommit; /* from odbccat.c */
 extern int32 http_keep_alive_timeout;
-extern long http_max_keep_alives;
-extern long http_max_cached_proxy_connections;
-extern long http_proxy_connection_cache_timeout;
+extern int32 http_max_keep_alives;
+extern int32 http_max_cached_proxy_connections;
+extern int32 http_proxy_connection_cache_timeout;
 extern char * http_server_id_string;
 extern char * http_client_id_string;
+extern char * http_access_control_allow_default_headers;
 extern char * http_soap_client_id_string;
 extern long http_ses_trap;
 extern int http_check_rdf_accept;
 extern int32 http_limited;
+extern int32 enable_https_vd_renegotiate;
 
 extern int vd_use_mts;
 
@@ -193,6 +199,7 @@ extern int uriqa_dynamic_local;
 extern int lite_mode;
 extern int rdf_obj_ft_rules_size;
 extern int it_n_maps;
+extern char * rdf_label_inf_name;
 extern int32 rdf_shorten_long_iri;
 extern int32 ric_samples_sz;
 extern int32 enable_p_stat;
@@ -238,6 +245,7 @@ int32 c_bad_dtp;
 int32 c_atomic_dive;
 #endif
 extern int32 c_checkpoint_interval;
+extern int32 c_soft_checkpoint;
 int32 c_scheduler_period;
 int32 c_oldest_flushable;
 int32 c_striping;
@@ -353,6 +361,7 @@ int32 c_lh_xany_normalization_flags = 0;
 int32 c_i18n_wide_file_names = 0;
 char *c_i18n_volume_encoding = NULL;
 char *c_i18n_volume_emergency_encoding = NULL;
+char *c_http_access_control_allow_default_headers = NULL;
 extern int lh_xany_normalization_flags;
 extern int i18n_wide_file_names;
 extern struct encoding_handler_s *i18n_volume_encoding;
@@ -464,12 +473,13 @@ int32 c_temp_db_size = 0;
 int32 c_dbev_enable = 1;
 
 extern long sparql_result_set_max_rows;
-extern long sparql_max_mem_in_use;
+extern int32 sparql_construct_max_triples;
+extern size_t sparql_max_mem_in_use;
 extern int rdf_create_graph_keywords;
 extern int rdf_query_graph_keywords;
 
 int32 c_sparql_result_set_max_rows = 0;
-int32 c_sparql_max_mem_in_use = 0;
+size_t c_sparql_max_mem_in_use = 0L;
 int32 c_rdf_create_graph_keywords = 0;
 int32 c_rdf_query_graph_keywords = 0;
 
@@ -684,10 +694,14 @@ cfg_open_syslog (int level, char *c_facility)
 int cfg_getsize (PCONFIG pc, char * sec, char * attr, size_t * sz);
 int cfg2_getsize (PCONFIG pc,  char * sec, char * attr, size_t * sz);
 
+static int cfg_get_number_of_buffers (PCONFIG pc, char *sec, char *attr, int32 * sz);
+static int cfg_get_max_dirty_buffers (PCONFIG pc, char *sec, char *attr, int32 * sz);
+
 extern LOG *virtuoso_log;
 extern int tn_step_refers_to_input;
 
 static char *prefix;
+
 int
 cfg_setup (void)
 {
@@ -837,6 +851,11 @@ cfg_setup (void)
       ssl_server_ecdh_curve = NULL;
 #endif
 
+  if (cfg_getlong (pconfig, section, "WriteTimeout", &c_ssl_write_timeout) == -1)
+    c_ssl_write_timeout = 10;
+  if (cfg_getlong (pconfig, section, "ReadTimeout", &c_ssl_read_timeout) == -1)
+    c_ssl_read_timeout = 10;
+
   if (cfg_getlong (pconfig, section, "ServerThreads", &c_server_threads) == -1)
     if (cfg_getlong (pconfig, section, "MaxClientConnections", &c_server_threads) == -1)
       c_server_threads = 10;
@@ -844,7 +863,10 @@ cfg_setup (void)
   if (cfg_getlong (pconfig, section, "CheckpointInterval", &c_checkpoint_interval) == -1)
     c_checkpoint_interval = 0;
 
-  if (cfg_getlong (pconfig, section, "NumberOfBuffers", &c_number_of_buffers) == -1)
+  if (cfg_getlong (pconfig, section, "SoftCheckpoint", &c_soft_checkpoint) == -1)
+    c_soft_checkpoint = 0;
+
+  if (cfg_get_number_of_buffers (pconfig, section, "NumberOfBuffers", &c_number_of_buffers) == -1)
     c_number_of_buffers = 2000;
   if (c_number_of_buffers < 20000)
     c_number_of_buffers = 20000;
@@ -852,14 +874,14 @@ cfg_setup (void)
   if (cfg_getlong (pconfig, section, "LockInMem", &c_lock_in_mem) == -1)
     c_lock_in_mem = 0;
 
-  if (cfg_getlong (pconfig, section, "MaxDirtyBuffers", &c_max_dirty_buffers) == -1)
+  if (cfg_get_max_dirty_buffers (pconfig, section, "MaxDirtyBuffers", &c_max_dirty_buffers) == -1)
     c_max_dirty_buffers = 0;
 
   if (cfg_getlong (pconfig, section, "UnremapQuota", &cp_unremap_quota) == -1)
     cp_unremap_quota = 0;
   else 
     cp_unremap_quota_is_set = 1;
-#if 0 /*GK: obosolete */
+#if 0 /*GK: obsolete */
   if (cfg_getlong (pconfig, section, "AtomicDive", &c_atomic_dive) == -1)
     c_atomic_dive = 1;
 #endif
@@ -1047,18 +1069,9 @@ cfg_setup (void)
     sqlo_compiler_exceeds_run_factor = 0;
 
   if (cfg_getsize (pconfig, section, "MaxMemPoolSize", &size_t_helper) == -1)
-    sqlo_max_mp_size = 200000000;
+    sqlo_max_mp_size = 400000000;
   else
-    sqlo_max_mp_size = size_t_helper;
-#ifdef POINTER_64
-  if (sqlo_max_mp_size >= 0x40000000)
-    sqlo_max_mp_size = INT32_MAX;
-  else
-    sqlo_max_mp_size *= 2;
-#endif
-
-  if (sqlo_max_mp_size != 0 && sqlo_max_mp_size < 5000000)
-    sqlo_max_mp_size = 5000000;
+    sqlo_max_mp_size = size_t_helper > 0 ? MAX(size_t_helper, 400000000) : 0; /* unlimited or 400m min */
 
  if (cfg_getlong (pconfig, section, "MaxSparqlMemPoolSize", &c_mp_sparql_cap) == -1)
    c_mp_sparql_cap = -1;
@@ -1118,6 +1131,8 @@ cfg_setup (void)
 
   if (cfg_getlong (pconfig, section, "LogProcOverwrite", &log_proc_overwrite) == -1)
     log_proc_overwrite = 1;
+  if (cfg_getlong (pconfig, section, "LogSqlCodeInit", &log_sql_code_init) == -1)
+    log_proc_overwrite = 0;
   if (cfg_getlong (pconfig, section, "PageCompress", &c_compress_mode) == -1)
     c_compress_mode = 0;
 
@@ -1332,22 +1347,42 @@ cfg_setup (void)
   section = "Flags";
   {
     stat_desc_t *sd = &dbf_descs[0];
-    int32 v;
+    size_t v;
+    int32 v32;
     while (sd->sd_name)
       {
-	if (cfg_getlong (pconfig, section, sd->sd_name, &v) != -1)
+	v32 = INT32_MAX;
+	if (cfg_getsize (pconfig, section, sd->sd_name, &v) != -1 ||
+	    cfg_getlong (pconfig, section, sd->sd_name, &v32) != -1)	/* this is for cases of negative flags or zero */
 	  {
-	    if ((ptrlong)SD_INT32 == (ptrlong) sd->sd_str_value)
-	      *((int32*)sd->sd_value) = v;
-	    else if (sd->sd_value)
-	      *(sd->sd_value) = (long) v;
-	    else
-	      log_error ("Cannot set flag %s", sd->sd_name);
+	    if (v32 != INT32_MAX)
+	      v = v32;
+	    switch (sd->sd_type)
+	      {
+	      case SD_TYPE_INT32:
+		{
+		  if (v > INT32_MIN && v < INT32_MAX)
+		    *((int32 *) sd->sd_value) = (int32) v;
+		  else
+		    log_error ("Cannot set flag %s, value out of int32 range", sd->sd_name);
+		}
+		break;
+	      case SD_TYPE_INT64:
+		*((int64 *) sd->sd_value) = v;
+		break;
+	      case SD_TYPE_LONG:
+		*(long *) (sd->sd_value) = (long) v;
+		break;
+	      default:
+		log_error ("Cannot set flag %s", sd->sd_name);
+	      }
 	  }
-	sd ++;
+        sd++;
       }
   }
 
+  /* no more than max array elements, otherwise will have bad box allocated */
+  dc_max_batch_sz = MIN (dc_max_batch_sz, MAX_BOX_ELEMENTS - 1);
 
   /*
    *  Parse [HTTPServer] section
@@ -1377,6 +1412,14 @@ cfg_setup (void)
 
   if (strlen (http_client_id_string) > 64)
     http_client_id_string = "Mozilla/4.0 (compatible; Virtuoso)";
+
+  if (cfg_getlong (pconfig, section, "ClientRequestTimeout", &long_helper) == -1)
+    http_default_client_req_timeout = 100;
+  else
+    {
+      if (long_helper > 0 && long_helper < INT32_MAX)
+        http_default_client_req_timeout = long_helper;
+    }
 
   if (cfg_getstring (pconfig, section, "SOAPClientIdString", &http_soap_client_id_string) == -1)
     http_soap_client_id_string = "OpenLink Virtuoso SOAP";
@@ -1457,6 +1500,9 @@ cfg_setup (void)
 
   if (cfg_getlong (pconfig, section, "HSTS_MaxAge", &https_hsts_max_age) == -1)
       https_hsts_max_age = -1;
+
+  if (cfg_getstring (pconfig, section, "CSP_Directives", &https_csp) == -1)
+    https_csp = NULL;
 
   if (cfg_getstring (pconfig, section, "SSLPrivateKey", &c_https_key) == -1)
     c_https_key = NULL;
@@ -1539,6 +1585,13 @@ cfg_setup (void)
 
   if (cfg_getlong (pconfig, section, "WriteTimeout", &ws_write_timeout) == -1)
     ws_write_timeout = 0;
+
+  if (cfg_getlong (pconfig, section, "EnableHTTPSRenegotiate", &enable_https_vd_renegotiate) == -1)
+    enable_https_vd_renegotiate = 0;
+
+  if (cfg_getstring (pconfig, section, "AccessControlAllowDefaultHeaders", &c_http_access_control_allow_default_headers) != -1)
+    http_access_control_allow_default_headers = box_dv_short_string (c_http_access_control_allow_default_headers);
+
   /*
    * FIXME: set meaningful default for c_http_proxy_connection_cache_timeout
    * if c_http_max_cached_proxy_connections is set to something whenever
@@ -1658,8 +1711,11 @@ cfg_setup (void)
   if (cfg_getlong (pconfig, section, "ResultSetMaxRows", &c_sparql_result_set_max_rows) == -1)
     c_sparql_result_set_max_rows = 0;
 
-  if (cfg_getlong (pconfig, section, "MaxMemInUse", &c_sparql_max_mem_in_use) == -1)
-    c_sparql_max_mem_in_use = 0;
+  if (cfg_getlong (pconfig, section, "MaxConstructTriples", &sparql_construct_max_triples) == -1)
+    sparql_construct_max_triples = 0;
+
+  if (cfg_getsize (pconfig, section, "MaxMemInUse", &c_sparql_max_mem_in_use) == -1)
+    c_sparql_max_mem_in_use = 0L;
 
   if (cfg_getlong (pconfig, section, "CreateGraphKeywords", &c_rdf_create_graph_keywords) == -1)
     c_rdf_create_graph_keywords = 0;
@@ -1669,6 +1725,9 @@ cfg_setup (void)
 
   if (cfg_getlong (pconfig, section, "TransitivityCacheEnabled", &tn_cache_enable) == -1)
     tn_cache_enable = 0;
+
+  if (cfg_getstring (pconfig, section, "LabelInferenceName", &rdf_label_inf_name) == -1)
+    rdf_label_inf_name = NULL;
 
   if (cfg_getlong (pconfig, section, "ShortenLongURIs", &rdf_shorten_long_iri) == -1)
     rdf_shorten_long_iri = 1;
@@ -1942,11 +2001,11 @@ new_cfg_set_checkpoint_interval (int32 f)
 }
 
 /*
- *  Called from DBMS to build the main dbs.
- *  Simply passes all configuration to the dbs.
+ *  Called from DBMS to build the main db.
+ *  Simply passes all configuration to the db.
  */
 void
-new_db_read_cfg (dbe_storage_t * ignore, char *mode)
+new_db_read_cfg (dbe_storage_t * ignore, const char *mode)
 {
   main_bufs = c_number_of_buffers;
   cf_lock_in_mem = c_lock_in_mem;
@@ -2108,6 +2167,13 @@ new_db_read_cfg (dbe_storage_t * ignore, char *mode)
     }
   uriqa_dynamic_local = c_uriqa_dynamic_local;
   sparql_result_set_max_rows = c_sparql_result_set_max_rows;
+  if (!sparql_construct_max_triples && sparql_result_set_max_rows)
+    sparql_construct_max_triples = sparql_result_set_max_rows; /* for compatibility with previous rev. */
+  if (sparql_construct_max_triples > (MAX_BOX_ELEMENTS - 1))
+    {
+      log_error ("SPARQL/MaxConstructTriples parameter cannot be more than %d, will use maximum possible limit.", MAX_BOX_ELEMENTS - 1);
+      sparql_construct_max_triples = MAX_BOX_ELEMENTS - 1;
+    }
   sparql_max_mem_in_use = c_sparql_max_mem_in_use;
   rdf_create_graph_keywords = c_rdf_create_graph_keywords;
   rdf_query_graph_keywords = c_rdf_query_graph_keywords;
@@ -2213,8 +2279,107 @@ cfg_getsize (PCONFIG pc, char * sec, char * attr, size_t * sz)
 #define cslentry dk_cslentry
 #define csl_free(f) dk_free_box (f)
 
+
+extern int64 get_total_sys_mem (void);
+
+static int
+cfg_get_number_of_buffers (PCONFIG pc, char *sec, char *attr, int32 * sz)
+{
+  char *valstr;
+  int64 val;
+  char suffix;
+  int64 nbufs;
+  int64 total_mem = get_total_sys_mem ();
+
+  if (-1 == cfg_getstring (pc, sec, attr, &valstr))
+    return -1;
+
+  val = (int64) atol (valstr);
+  if (val <= 0)
+    return -1;
+
+  suffix = toupper (valstr[strlen (valstr) - 1]);
+  switch (suffix)
+    {
+    case 'M':
+      val *= 1024 * 1024;
+      nbufs = val / PAGE_SZ;
+      nbufs -= nbufs % 1000;
+      break;
+
+    case 'G':
+      val *= 1024 * 1024 * 1024;
+      nbufs = val / PAGE_SZ;
+      nbufs -= nbufs % 1000;
+      break;
+
+    case '%':
+      if (val > 100)
+	return -1;
+      val = (int64) ((total_mem / 100) * val);
+      nbufs = val / PAGE_SZ;
+      nbufs -= nbufs % 1000;
+      break;
+
+    default:
+      if (!isdigit (suffix))
+	return -1;
+      nbufs = val;
+    }
+
+#ifndef NDEBUG
+  log_debug ("NumberOfBuffers=%ld", nbufs);
+#endif
+
+  if (nbufs < INT_MAX)
+    *sz = (int32) nbufs;
+
+  return 0;
+}
+
+
+static int
+cfg_get_max_dirty_buffers (PCONFIG pc, char *sec, char *attr, int32 * sz)
+{
+  char *valstr;
+  int32 val;
+  char suffix;
+
+  if (-1 == cfg_getstring (pc, sec, attr, &valstr))
+    return -1;
+
+  val = (int32) atol (valstr);
+  if (val <= 0)
+    return -1;
+
+  suffix = toupper (valstr[strlen (valstr) - 1]);
+  switch (suffix)
+    {
+    case '%':
+      if (val > 100)
+	val = 50;
+      val = (int32) ((c_number_of_buffers / 100) * val);
+      val -= val % 1000;
+      break;
+
+    default:
+      if (!isdigit (suffix))
+	return -1;
+      break;
+    }
+
+#ifndef NDEBUG
+  log_info ("MaxDirtyBuffers=%ld", (long) val);
+#endif
+
+  *sz = val;
+
+  return 0;
+}
+
+
 void
-new_dbs_read_cfg (dbe_storage_t * dbs, char *ignore_file_name)
+new_dbs_read_cfg (dbe_storage_t * dbs, const char *ignore_file_name)
 {
   char temp_string[2048];
   char *section = dbs->dbs_name;
@@ -2232,6 +2397,19 @@ new_dbs_read_cfg (dbe_storage_t * dbs, char *ignore_file_name)
     }
   else if (dbs->dbs_type == DBS_RECOVER)
     section = "Database";
+
+  if (DBS_TEMP == dbs->dbs_type)
+    {
+      char *str;
+      unsigned long c_pages;
+
+      if (cfg_getstring (pconfig, section, "MaxTempDBPages", &str) == -1
+	  || cfg_parse_size_with_modifier (str, NULL, NULL, &c_pages) == -1 )
+	c_pages = 0;
+      if (c_pages < 2 * EXTENT_SZ)
+	c_pages = 0;
+      dbs_max_temp_db_pages = c_pages;
+    }
 
   if (cfg_getstring (pconfig, section, "DatabaseFile", &c_database_file) == -1)
     c_database_file = s_strdup (setext (prefix, s_db, EXT_SET));
@@ -2498,7 +2676,7 @@ db_lck_lock_fd (int fd, char *name)
 
       /* we could not get a lock, so who owns it? */
       fcntl (fd, F_GETLK, &fl);
-      log (L_ERR, "Virtuoso is already runnning (pid %ld)", fl.l_pid);
+      log (L_ERR, "Virtuoso is already running (pid %ld)", fl.l_pid);
       return -1;
     }
 #elif defined (HAVE_FLOCK_IN_SYS_FILE)
@@ -2608,7 +2786,7 @@ db_not_in_use (void)
 
 /* needed to access the server port in hosting binaries */
 char *
-virtuoso_odbc_port ()
+virtuoso_odbc_port (void)
 {
   return c_serverport;
 }

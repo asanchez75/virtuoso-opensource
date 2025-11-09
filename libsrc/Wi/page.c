@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -139,7 +139,13 @@ kc_var_col (dbe_key_t * key, buffer_desc_t * buf, db_buf_t row, dbe_col_loc_t * 
   len = cl->cl_pos[rv];
   if (CL_FIRST_VAR == len)
     {
-      if (key->key_version != IE_KEY_VERSION (row))
+      key_ver_t kv = IE_KEY_VERSION (row);
+      if (KV_LEFT_DUMMY == kv)
+        {
+          dp_addr_t leaf = LONG_REF (row + LD_LEAF);
+          GPF_T1("Not supposed to have such layout");
+        }
+      if (key->key_version != kv)
 	key = key->key_versions[IE_KEY_VERSION (row)];
       off = 0 == IE_KEY_VERSION (row) ? key->key_key_var_start[rv] : key->key_row_var_start[rv];
       len = SHORT_REF (row + key->key_length_area[rv]) - off;
@@ -244,7 +250,7 @@ str_delta (db_buf_t str1, db_buf_t str2, int len1, int len2, row_size_t * prefix
 resource_t * pfh_rc;
 
 pf_hash_t *
-pfh_allocate ()
+pfh_allocate (void)
 {
   return (pf_hash_t *) dk_alloc (sizeof (pf_hash_t));
 }
@@ -913,19 +919,23 @@ void
 buf_order_ck (buffer_desc_t * buf)
 {
   int inx;
-  page_map_t * pm = buf->bd_content_map;
+  page_map_t *pm = buf->bd_content_map;
   if (buf->bd_tree->it_key->key_is_geo)
-    return; /* key order criteria do not apply */
+    return;			/* key order criteria do not apply */
   for (inx = 0; inx < pm->pm_count - 1; inx++)
     {
       if (DVC_LESS != buf_row_compare (buf, inx, buf, inx + 1, 1))
-	GPF_T1 ("insert not in order");
+	{
+          log_error ("Broken index: %s L:%d", buf->bd_tree->it_key->key_name, buf->bd_page);
+          dbg_page_map_log (buf, "buf_noorder_dump.txt", "Index not in order");
+	  GPF_T1 ("insert not in order");
+	}
     }
 }
 
 
 #ifndef PAGE_CHECK
-#define buf_order_ck(b)
+#define buf_order_ck(b)		((void)0)
 #endif
 
 
@@ -1906,6 +1916,12 @@ pf_rd_append (page_fill_t * pf, row_delta_t * rd, row_size_t * split_after)
 	{
 	  extend = it_new_page (pf->pf_itc->itc_tree,
 				pf->pf_org->bd_page, DPF_INDEX, 0, pf->pf_itc);
+          if (!extend && DBS_TEMP == pf->pf_itc->itc_tree->it_storage->dbs_type)
+            {
+              log_error ("Out of disk space for temp table");
+              pf->pf_itc->itc_ltrx->lt_error = LTE_NO_DISK;
+              itc_bust_this_trx (pf->pf_itc, &extend, ITC_BUST_THROW);
+            }
 	  if (!extend)
 	    GPF_T1("Can't get page buffer from it_new_page");
 	  if (pf->pf_itc->itc_is_ac)

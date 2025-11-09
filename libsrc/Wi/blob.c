@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -1896,7 +1896,7 @@ bh_is_ready:
       replaced_version = NULL;
     }
 
-  target_bh->bh_timestamp = sqlbif_rnd (&rnd_seed_b) + approx_msec_real_time ();
+  target_bh->bh_timestamp = sqlbif_rnd (&rnd_seed_b) + (uint32) approx_msec_real_time ();
   /* Too many messages...
   dbg_printf (("itc_set_blob_col: creating ts %ld\n", target_bh->bh_timestamp));
   ... Too many messages */
@@ -3014,7 +3014,9 @@ bl_check (blob_layout_t * bl)
       for (inx = 0; inx < n; inx++)
 	{
 	  dp = bl->bl_pages[inx];
+#if 0
 	  if (dp == bl_trap) bing ();
+#endif
 	  if (dp <3 || dp > it->it_storage->dbs_n_pages)
 	    {
 	      error = 1;

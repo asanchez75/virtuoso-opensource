@@ -2,7 +2,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -62,8 +62,8 @@ create function DAV_PERROR (in x any)
   if (x >= 0)
     return NULL;
   if (x = -44) -- __SQL_ERROR
-    return sprintf ('(%d) %s', x, connection_get ('__sql_message'));
-  if (x < -44) -- When you add a new error, change the limit value here!
+    return sprintf ('(%d) %s', x, connection_get ('__SQL_MESSAGE'));
+  if (x < -45) -- When you add a new error, change the limit value here!
     return sprintf ('(%d) Unspecified error', x);
   errlist := vector (
     '(-01) The path (target of operation) is not valid',
@@ -108,7 +108,9 @@ create function DAV_PERROR (in x any)
     '(-40) The path (target of operation) does not match naming convention that is used by DET',
     '(-41) The size of DAV collection subtree is out of quota',
     '(-42) The resource is unavailable because resource owner is disabled',
-    '(-43) Access to a home DAV collection of a disabled account is blocked'
+    '(-43) Access to a home DAV collection of a disabled account is blocked',
+    '(-44) SQL Error',
+    '(-45) Unprocessable Content'
     ); -- When you add a new error, change the limit value above!
   return errlist [-(x+1)];
 }
@@ -2053,7 +2055,7 @@ create function DAV_AUTHENTICATE_HTTP (
       return rc;
   }
 
-  if ((a_uid is null) and (not i_allow_anonymous or ('' <> WS.WS.FINDPARAM (a_lines, 'Authorization:'))))
+  if (not is_http_error_handler() and (a_uid is null) and (not i_allow_anonymous or ('' <> WS.WS.FINDPARAM (a_lines, 'Authorization:'))))
   {
     rc := WS.WS.GET_DAV_AUTH (a_lines, i_allow_anonymous, can_write_http, a_uname, a_pwd, a_uid, a_gid, a_perms);
     if (rc < 0)
@@ -2413,6 +2415,9 @@ create function DAV_CHECK_ACLS (
   declare det varchar;
   declare graph, grpGraph, reqMode, realMode, IRIs any;
 
+  if (not isstring (path))
+    return 0;
+
   rc := 0;
   req := replace (req, '_', '0');
   reqMode := vector (req[0]-48, req[1]-48, req[2]-48);
@@ -2430,7 +2435,10 @@ create function DAV_CHECK_ACLS (
        )
     {
       graph := WS.WS.WAC_GRAPH (path);
-      grpGraph := SIOC.DBA.get_graph () || '/private/%';
+      if (__proc_exists ('SIOC.DBA.get_graph') is not null)
+        grpGraph := SIOC.DBA.get_graph () || '/private/%';
+      else
+        grpGraph := null;
       DB.DBA.DAV_CHECK_ACLS_INTERNAL (mode, netid, webid, webidGraph, graph, grpGraph, IRIs, reqMode, realMode, a_cert);
       if ((reqMode[0] <= realMode[0]) and (reqMode[1] <= realMode[1]) and (reqMode[2] <= realMode[2]))
       {
@@ -2737,7 +2745,22 @@ create procedure DAV_RES_UPLOAD_STRSES_INT (
 )
 {
   declare id, rc, old_log_mode, new_log_mode any;
+  declare parent_folder_id int;
+  declare content_callback varchar;
 
+  parent_folder_id := DAV_SEARCH_ID (path, 'P');
+  content_callback := DB.DBA.DAV_HIDE_ERROR(DB.DBA.DAV_PROP_GET_INT (parent_folder_id, 'C', 'content-callback-function', 0));
+  if (not isnull(content_callback) and not isnull(__proc_exists(content_callback)))
+    {
+      declare exit handler for sqlstate '*', not found {
+        log_message (sprintf ('Error in `%s`: %s %s', content_callback, __SQL_STATE, __SQL_MESSAGE));
+        goto no_fn;
+      };
+      rc := call(content_callback) (path, content, type);
+      if (isnull(DAV_HIDE_ERROR(rc)))
+        return rc;
+    }
+no_fn:
   if (0 = dav_call)
   {
     if ((type = 'text/turtle') and not DB.DBA.DAV_MAC_METAFILE (path))
@@ -2767,9 +2790,12 @@ create procedure DAV_RES_UPLOAD_STRSES_INT (
   rc := DAV_RES_UPLOAD_STRSES_INT_INNER (path, content, type, permissions, uid, gid, auth_uname, auth_pwd, extern, cr_time, mod_time, _rowguid, ouid, ogid, check_locks);
   log_enable (bit_or (old_log_mode, 4), 1);
 
-  if ((DAV_HIDE_ERROR (rc) is not null) and (type in ('text/turtle', 'application/ld+json')))
-    -- create LDP triple if needed
-    DB.DBA.LDP_CREATE (path);
+  if (DAV_HIDE_ERROR (rc) is not null)
+    {
+      parent_folder_id := DAV_SEARCH_ID (path, 'P');
+      if (type in ('text/turtle', 'application/ld+json')) -- create LDP triple if needed
+        DB.DBA.LDP_CREATE (path, parent_folder_id);
+  }
 
   return rc;
 }
@@ -2887,13 +2913,11 @@ create procedure DAV_RES_UPLOAD_STRSES_INT_INNER (
         return rc;
     }
 
-    set isolation='committed';
     if ( auth_uid <> http_nobody_uid() and
         (http_dav_uid () <> coalesce (connection_get ('DAVBillingUserID'), -12)) and
         exists (select top 1 1 from SYS_USERS where U_ID = auth_uid and U_ACCOUNT_DISABLED = 1 ))
       return -42;
 
-    set isolation='serializable';
     if (det is not null)
     {
       DAV_SEARCH_ID_OR_DET (par, 'R', det, detcol_id, detcol_path, unreached_path);
@@ -3117,7 +3141,9 @@ create procedure RDF_SINK_UPLOAD (
   in rdf_sponger varchar,
   in rdf_cartridges varchar,
   in rdf_metaCartridges varchar,
-  in rdf_private integer := 1)
+  in rdf_private integer default 1,
+  in target_rdf_sink_col_id int default -1,
+  in rdf_validate_callback varchar default null)
 {
   -- dbg_obj_princ ('RDF_SINK_UPLOAD (', path, res_type, ')');
   declare rdf_iri, rdf_graph2, rdf_base2 varchar;
@@ -3154,8 +3180,8 @@ create procedure RDF_SINK_UPLOAD (
           http_dav_url (fname, null, ss);
           fname := string_output_string (ss);
           item_graph := WS.WS.DAV_IRI (path || '/' || fname);
-          RDF_SINK_UPLOAD (concat (path, '/', fname), content, DAV_GUESS_MIME_TYPE_BY_NAME (fname), rdf_graph, rdf_base, rdf_sponger, rdf_cartridges, rdf_metaCartridges, 0);
-          SPARQL insert in graph ?:rdf_graph2 { ?s ?p ?o } where { graph `iri(?:item_graph)` { ?s ?p ?o } };
+          RDF_SINK_UPLOAD (concat (path, '/', fname), content, DAV_GUESS_MIME_TYPE_BY_NAME (fname), rdf_graph, rdf_base, rdf_sponger, rdf_cartridges, rdf_metaCartridges, 0, target_rdf_sink_col_id, rdf_validate_callback);
+          SPARQL define input:storage "" insert in graph ?:rdf_graph2 { ?s ?p ?o } where { graph `iri(?:item_graph)` { ?s ?p ?o } };
           SPARQL clear graph ?:item_graph;
         }
       file_delete (tmp_file, 1);
@@ -3250,7 +3276,21 @@ _grddl:;
   return 0;
 
 _exit:
-  SPARQL insert in graph ?:rdf_graph { ?s ?p ?o } where { graph `iri(?:rdf_graph2)` { ?s ?p ?o } };
+  if (rdf_validate_callback is not null)
+    {
+      declare rdf_validation_graph varchar;
+      rdf_validation_graph := concat('urn:shacl:rdf_sink:', bin2hex(xenc_digest (rdf_graph, 'sha1')), '-validation-report');
+      call(rdf_validate_callback) (null, vector(rdf_graph2), null, rdf_validation_graph);
+      if ((SPARQL prefix sh: <http://www.w3.org/ns/shacl#> 
+      ASK { GRAPH `iri(?:rdf_validation_graph)` { virtrdf:ValidationReport sh:conforms false }}))
+        {
+          SPARQL clear graph ?:rdf_graph2;
+          DB.DBA.DAV_DET_ACTIVITY ('rdfSink', target_rdf_sink_col_id, 
+                concat('Data Import Validation Failed: report graph <',rdf_validation_graph,'>'));
+          return 0;
+        }
+    }
+  SPARQL define input:storage "" insert in graph ?:rdf_graph { ?s ?p ?o } where { graph `iri(?:rdf_graph2)` { ?s ?p ?o } };
 
 _private:
   {
@@ -3364,6 +3404,7 @@ _again:;
 }
 ;
 
+-- /* RDF `sink` DET folder main entry point, called once to be queued anotger time from queue call!? */
 create procedure RDF_SINK_INSERT (
   in _queue_id integer := null,
   in _path varchar,
@@ -3377,6 +3418,7 @@ create procedure RDF_SINK_INSERT (
   -- dbg_obj_princ ('RDF_SINK_INSERT (', _queue_id, _path, ')');
   declare rdf_graph varchar;
   declare rdf_params, rdf_sponger, rdf_base, rdf_cartridges, rdf_metaCartridges, _res_content any;
+  declare rdf_validate_callback varchar;
   declare exit handler for sqlstate '*'
   {
     goto _bad_content;
@@ -3406,10 +3448,12 @@ create procedure RDF_SINK_INSERT (
   rdf_sponger := get_keyword ('sponger', rdf_params, 'on');
   rdf_cartridges := get_keyword ('cartridges', rdf_params, '');
   rdf_metaCartridges := get_keyword ('metaCartridges', rdf_params, '');
+  rdf_validate_callback := __proc_exists(get_keyword ('validator', rdf_params, ''));
 
   -- upload into first (rdf_sink) graph
   DB.DBA.DAV_DET_ACTIVITY ('rdfSink', _col_id, 'Data Import Start: ' || _path);
-  if (DB.DBA.RDF_SINK_UPLOAD (_path, _res_content, _res_type, rdf_graph, rdf_base, rdf_sponger, rdf_cartridges, rdf_metaCartridges))
+  if (DB.DBA.RDF_SINK_UPLOAD (_path, _res_content, _res_type, rdf_graph, rdf_base,
+        rdf_sponger, rdf_cartridges, rdf_metaCartridges, 1, _col_id, rdf_validate_callback))
   {
     DB.DBA.DAV_DET_ACTIVITY ('rdfSink', _col_id, 'Data Import End: ' || _path);
     DB.DBA.RDF_SINK_REDIRECT (_col_id, rdf_graph, rdf_params, _res_owner, _res_group);
@@ -3524,6 +3568,8 @@ create procedure DAV_DELETE (
 }
 ;
 
+-- /* delete internal api  */
+
 create procedure DAV_DELETE_INT (
   in path varchar,
   in silent integer := 0,
@@ -3577,6 +3623,8 @@ create procedure DAV_DELETE_INT (
   id_meta := DAV_SEARCH_ID (path_meta, 'R');
   if (what = 'R')
   {
+    declare parent_folder_id int;
+
     delete from WS.WS.SYS_DAV_RES where RES_ID = id;
     DB.DBA.LDP_DELETE (path, 1);
 
@@ -3586,6 +3634,7 @@ create procedure DAV_DELETE_INT (
       delete from WS.WS.SYS_DAV_RES where RES_ID = id_meta;
       DB.DBA.LDP_DELETE (path_meta, 1);
     }
+    parent_folder_id := DAV_SEARCH_ID (path, 'P');
   }
   else if (what = 'C')
   {
@@ -5603,39 +5652,51 @@ create procedure DAV_RES_CONTENT_META_N3 (
   in path varchar)
 {
   declare item any;
-  declare iri, creator_iri varchar;
+  declare iri, creator_iri, person_iri, pref, tp_iri varchar;
   declare stream, dict, triples any;
 
-  if (__proc_exists ('SIOC.DBA.get_graph') is null)
-    return -1;
-
-  dict := dict_new();
   item := DAV_DIR_LIST_INT (path, -1, '%', null, null, http_dav_uid ());
   if (DAV_HIDE_ERROR (item) is null)
     return -1;
 
+  pref := WS.WS.DAV_HOST();
   item := item[0];
-  iri := iri_to_id (WS.WS.DAV_HOST () || path);
+  iri := iri_to_id (pref || path);
 
-  -- creator
-  creator_iri := SIOC..user_iri (item[7]);
-	dict_put (dict, vector (iri, iri_to_id (SIOC..sioc_iri ('has_creator')), iri_to_id (creator_iri)), 0);
-	dict_put (dict, vector (iri_to_id (creator_iri), iri_to_id (SIOC..sioc_iri ('creator_of')), iri), 0);
-  dict_put (dict, vector (iri, SIOC..foaf_iri ('maker'), SIOC..person_iri (creator_iri)), 0);
-  dict_put (dict, vector (iri_to_id (SIOC..person_iri (creator_iri)), SIOC..foaf_iri ('made'), iri), 0);
+  creator_iri := iri_to_id (sprintf ('%s/dataspace/%U#this', pref, __sec_uid_to_user (item[7])));
+  person_iri := iri_to_id (sprintf ('%s/dataspace/person/%U#this', pref, __sec_uid_to_user (item[7])));
+  if (item[1] = 'R')
+    {
+      tp_iri := iri_to_id (sprintf ('http://www.w3.org/ns/iana/media-types/%s#Resource', item[9]));
+    }
 
-  -- name
-  dict_put (dict, vector (iri, iri_to_id (SIOC..dc_iri ('title')), item[10]), 0);
-  dict_put (dict, vector (iri, iri_to_id (SIOC..rdfs_iri ('label')), item[10]), 0);
-
-  -- created
-  dict_put (dict, vector (iri, iri_to_id (SIOC..dcterms_iri ('created')), item[8]), 0);
-
-  -- modified
-  dict_put (dict, vector (iri, iri_to_id (SIOC..dcterms_iri ('modified')), item[3]), 0);
-
-  -- content type
-  dict_put (dict, vector (iri, iri_to_id (SIOC..dc_iri ('format')), item[9]), 0);
+  dict := dict_new();
+  if (item[1] = 'R')
+    {
+      dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), tp_iri), 0);
+      dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), iri_to_id (__xml_nsexpand_iristr('rdfs:Resource'))), 0);
+      dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), iri_to_id (__xml_nsexpand_iristr('ldp:Resource'))), 0);
+    }
+  if (item[1] = 'C')
+    {
+      dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), iri_to_id (__xml_nsexpand_iristr('ldp:BasicContainer'))), 0);
+      dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), iri_to_id (__xml_nsexpand_iristr('ldp:Container'))), 0);
+    }
+  if (item[9] in ('text/turtle', 'application/ld+json'))
+    dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), iri_to_id (__xml_nsexpand_iristr('ldp:RDFSource'))), 0);
+  else
+    dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdf:type')), iri_to_id (__xml_nsexpand_iristr('ldp:NonRDFSource'))), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('sioc:has_creator')), creator_iri), 0);
+  dict_put (dict, vector (creator_iri, iri_to_id (__xml_nsexpand_iristr('sioc:creator_of')), iri), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('foaf:maker')), person_iri), 0);
+  dict_put (dict, vector (person_iri, iri_to_id (__xml_nsexpand_iristr('foaf:made')), iri), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('dc:title')), item[10]), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('rdfs:label')), item[10]), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('dcterms:created')), item[8]), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('dcterms:modified')), item[3]), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('stat:mtime')), item[3]), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('stat:size')), item[2]), 0);
+  dict_put (dict, vector (iri, iri_to_id (__xml_nsexpand_iristr('dc:format')), item[9]), 0);
 
   stream := string_output ();
  	triples := dict_list_keys (dict, 0);
@@ -6108,8 +6169,11 @@ create procedure WS.WS.WAC_INSERT (
   giid := iri_to_id (graph);
   subj := iri_to_id (WS.WS.DAV_LINK (path));
   DB.DBA.TTLP (aciContent, graph, graph);
-  sparql insert into graph ?:giid { ?s ?p ?:giid } where { graph ?:giid { ?s ?p ?:subj  }};
-  if (exists (sparql prefix foaf: <http://xmlns.com/foaf/0.1/>  prefix acl: <http://www.w3.org/ns/auth/acl#> ask where { graph ?:giid { [] acl:accessTo ?:giid ; acl:mode acl:Read  ; acl:agentClass foaf:Agent . }})) -- public read
+  sparql define input:storage "" insert into graph ?:giid { ?s ?p ?:giid } where { graph ?:giid { ?s ?p ?:subj  }};
+  if ((sparql define input:storage ""
+    prefix foaf: <http://xmlns.com/foaf/0.1/>
+    prefix acl: <http://www.w3.org/ns/auth/acl#>
+  ask where { graph ?:giid { [] acl:accessTo ?:giid ; acl:mode acl:Read  ; acl:agentClass foaf:Agent . }})) -- public read
   {
     set triggers off;
     permissions [6] := 49;
@@ -8575,7 +8639,7 @@ create procedure DB.DBA.DAV_QUEUE_RUN (
   in _delay integer := 0)
 {
   -- dbg_obj_princ ('DB.DBA.DAV_QUEUE_RUN ()');
-  declare N, delayNumber, maxDelayNumber, newThreads, freeThreads, itemsCount, threadsCount integer;
+  declare N, delayNumber, maxDelayNumber, newThreads, freeThreads, itemsCount, threadsCount, max_threads integer;
   declare retValue, error any;
   declare aq, items, threadsArray any;
   declare exit handler for sqlstate '*'
@@ -8593,8 +8657,8 @@ create procedure DB.DBA.DAV_QUEUE_RUN (
   set isolation = 'committed';
   if (_notInit and DB.DBA.DAV_QUEUE_ACTIVE ())
     return;
-
-  threadsCount := atoi (coalesce (virtuoso_ini_item_value ('Parameters', 'AsyncQueueMaxThreads'), '10')) / 2;
+  max_threads := atoi(registry_get('DAV_QUEUE_MAX_THREADS','1000'));
+  threadsCount := __min(max_threads, atoi (coalesce (virtuoso_ini_item_value ('Parameters', 'AsyncQueueMaxThreads'), '10')) / 2);
   if (threadsCount <= 0)
     threadsCount := 1;
 
@@ -8772,3 +8836,26 @@ create procedure DB.DBA.DAV_RDF_SINK_UPDATE (
 --!AFTER
 DB.DBA.DAV_RDF_SINK_UPDATE ()
 ;
+
+create procedure WS.WS.COL_PATH_FX (in _id any)
+{
+  declare _path, _name varchar;
+  declare _p_id integer;
+  _path := '/';
+  whenever not found goto nf;
+  while (_id > 0)
+    {
+      select COL_NAME, COL_PARENT into _name, _p_id from WS.WS.SYS_DAV_COL where COL_ID = _id;
+      if (_id = _p_id)
+	{
+	  return NULL;
+	}
+      _id := _p_id;
+      _path := concat ('/', _name, _path);
+    }
+  return _path;
+nf:
+  return NULL;
+}
+;
+

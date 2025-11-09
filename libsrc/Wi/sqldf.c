@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -236,8 +236,11 @@ sqlo_df_size (int type)
 	  len += sizeof (df_elt_head.call);
 	  break;
       case DFE_FILTER:
-	  len += sizeof (df_elt_head.filter);
-	  break;
+          len += sizeof (df_elt_head.filter);
+          break;
+      case DFE_TABLE:
+          len += sizeof (df_elt_head.table);
+          break;
       default:
 	  len = sizeof (df_elt_t);
     }
@@ -261,7 +264,7 @@ sqlo_is_tautology (ST * tree)
       dtp_t l_dtp = DV_TYPE_OF (l);
       dtp_t r_dtp = DV_TYPE_OF (r);
       if (DV_LONG_INT == l_dtp && DV_LONG_INT == r_dtp)
-	return unbox (l) == unbox (r);
+	return unbox ((ccaddr_t) l) == unbox ((ccaddr_t) r);
       return 2;
     }
   return 2;
@@ -992,7 +995,7 @@ sqlo_df (sqlo_t * so, ST * tree)
 	  {
 	    int arginx;
 	    _DO_BOX_FAST (arginx, tree->_.fn_ref.fn_arglist)
-	      sqlo_df (so, tree->_.fn_ref.fn_arg);
+              sqlo_df (so, tree->_.fn_ref.fn_arglist[arginx]);
 	    END_DO_BOX_FAST;
 	  }
 	so->so_is_top_and = saved_top_and;
@@ -1002,7 +1005,10 @@ sqlo_df (sqlo_t * so, ST * tree)
 	    t_NEW_VARZ (op_table_t, got);
 	    ot->ot_group_ot = got;
 	    got->ot_is_group_dummy = 1;
+            got->ot_fref_ot = ot;
 	    ot->ot_group_dfe = sqlo_new_dfe (so, DFE_GROUP, NULL);
+            if (!dt->_.select_stmt.table_exp)
+              sqlc_new_error (so->so_sc->sc_cc, "37000", "SQ488", "Group by expression cannot be handled");
 	    ot->ot_group_dfe->_.setp.specs = dt->_.select_stmt.table_exp->_.table_exp.group_by;
 	    ot->ot_group_dfe->_.setp.top_cnt = sqlo_select_top_cnt (so, SEL_TOP (dt));
 	    ot->ot_group_dfe->_.setp.ot = got;
@@ -1083,6 +1089,7 @@ int enable_dfe_check = 0;
 void
 dfe_ref_check_1 (df_elt_t * dfe, dk_hash_t * defd1)
 {
+#ifdef DEBUG
   dk_hash_t* defd = defd1 ? defd1 : hash_table_allocate (101);
   df_elt_t * elt;
   switch (dfe->dfe_type)
@@ -1116,6 +1123,7 @@ dfe_ref_check_1 (df_elt_t * dfe, dk_hash_t * defd1)
     }
   if (!defd1)
     hash_table_free (defd);
+#endif
 }
 
 void
@@ -1130,6 +1138,7 @@ dfe_ref_check (df_elt_t * dfe)
 void
 ot_placed_check (op_table_t * ot)
 {
+#ifdef DEBUG
   dk_hash_t * ht;
   df_elt_t * elt;
   if (!enable_dfe_check)
@@ -1148,6 +1157,7 @@ ot_placed_check (op_table_t * ot)
     }
   END_DO_SET();
   hash_table_free (ht);
+#endif
 }
 
 int enable_gb_dep = 1;
@@ -1156,7 +1166,8 @@ void
 sqlo_mark_gb_dep (sqlo_t * so, df_elt_t * dfe)
 {
   /* if an exp is placed before a group by but is used after the group by then add it to the dependent of the gby */
-  df_elt_t * next;
+  df_elt_t * next, *next2;
+  int next_ctr = 0;
   so->so_mark_gb_dep = 0;
   if (!enable_gb_dep)
     return;
@@ -1166,8 +1177,12 @@ sqlo_mark_gb_dep (sqlo_t * so, df_elt_t * dfe)
       return;
     }
   
-  for (next = dfe->dfe_next; next; next = next->dfe_next)
+  for (next = dfe->dfe_next, next2 = dfe; next; next = next->dfe_next)
     {
+      if ((next_ctr++) % 2)
+        next2 = next2->dfe_next;
+      if (next2 == next)
+        sqlc_new_error (so->so_sc->sc_cc, "42000", "SQI01", "Internal error in SQL compiler: loop in dfe_next");
       if (DFE_GROUP == next->dfe_type && !next->_.setp.is_being_placed)
 	t_set_pushnew (&next->_.setp.gb_dependent, (void*)dfe);
     }
@@ -1207,6 +1222,8 @@ sqlo_place_dfe_after (sqlo_t * so, locus_t * loc, df_elt_t * after_this, df_elt_
 #endif
   dfe->dfe_next = NULL;
   dfe->dfe_prev = NULL;
+  if (!DFE_IS_SUB(super))
+    sqlc_new_error (so->so_sc->sc_cc, "37000", "SQI07", "Internal error in SQL compiler: sqlo_place_dfe_after in non container");
   L2_INSERT_AFTER (super->_.sub.first, super->_.sub.last, after_this, dfe, dfe_);
   if (DFE_TABLE == dfe->dfe_type)
     dfe->_.table.ot->ot_locus = loc;
@@ -1430,6 +1447,8 @@ dfe_inx_op_col_def_table (df_inx_op_t * dio, df_elt_t * col_dfe, df_elt_t * exce
   if (dio->dio_table
       && dfe_defines (dio->dio_table, col_dfe))
     return dio->dio_table;
+  if (dio->dio_terms && !IS_BOX_POINTER(dio->dio_terms))
+    return NULL;
   DO_SET  (df_inx_op_t *, term, &dio->dio_terms)
     {
       df_elt_t *def_dfe = dfe_inx_op_col_def_table (term, col_dfe, except_tb);
@@ -1681,7 +1700,7 @@ dfe_is_super (df_elt_t *super, df_elt_t * sub)
 
 
 df_elt_t *
-dfe_skip_to_min_card (df_elt_t * place, df_elt_t * super, df_elt_t * dfe)
+dfe_skip_to_min_card (df_elt_t * place, df_elt_t * super, df_elt_t * dfe, int skip_gby_oby)
 {
   /* when placing a func, see if some place later in the query has lower card */
   df_elt_t * best = place, *org_place = place;
@@ -1729,6 +1748,9 @@ dfe_skip_to_min_card (df_elt_t * place, df_elt_t * super, df_elt_t * dfe)
 	  ptrlong top_cnt;
 	  if (place->_.setp.is_being_placed)
 	    goto over;
+          /* coalesce & case exp may ref a col in gby the following oby has dc cleared ref */
+          if (skip_gby_oby && place->dfe_prev && DFE_GROUP == place->dfe_prev->dfe_type)
+            goto over;
 	  top_cnt = place->_.setp.top_cnt;
 	  if (top_cnt)
 	    {
@@ -2064,7 +2086,6 @@ sqlo_is_dt_state_func (char * name)
   return (!stricmp (name, "T_STEP") || !stricmp (name, "__TN_IN"));
 }
 
-
 df_elt_t *
 sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 {
@@ -2072,11 +2093,13 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
   locus_t * pref_loc;
   int inx;
   df_elt_t * placed = NULL;
-  int is_ro2lo = 0;
   /* check if equal exp already placed */
   locus_t * loc = super->dfe_locus;
+#if 0
+  int is_ro2lo = 0;
   if (st_is_call (dfe->dfe_tree, "__ro2lo", 1))
     {is_ro2lo = 1; bing (); }
+#endif
   if (!IS_BOX_POINTER (dfe))
     return dfe; /*true and falsecond markers */
   so->so_crossed_oby = NULL;
@@ -2096,8 +2119,10 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 	      /* even if doing a conditional exp and the subexp is already
 	       * placed in the directly preceding code sequence, return the placed one instead of repeating */
 	      placed = dfe_latest (so, 1, &dfe, 0);
+#if 0
 	      if (is_ro2lo && placed)
 		bing ();
+#endif
 	      so->so_place_code_forr_cond = prev;
 	    }
 	  if (placed && so->so_context_dt)
@@ -2178,6 +2203,8 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 	placed = dfe_skip_exp_dfes (placed, &dfe, 1);
 	so->so_mark_gb_dep = 1;
 	sqlo_place_dfe_after (so, pref_loc, placed, dfe);
+        if (!dfe->_.sub.ot)
+          SQL_GPF_T1 (so->so_sc->sc_cc, "Can not place expression");
 	dfe->_.sub.ot->ot_work_dfe = dfe_container (so, DFE_VALUE_SUBQ, placed);
 	dfe->_.sub.ot->ot_work_dfe->_.sub.in_arity = dfe_arity_with_supers (dfe->dfe_prev);
 	best = sqlo_layout (so, dfe->_.sub.ot, SQLO_LAY_VALUES, super);
@@ -2201,7 +2228,15 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 
 	dfe->dfe_locus = pref_loc;
 	placed = dfe_latest_by_ot (so, n_deps, deps, 1);
+        if (!placed)
+          sqlc_new_error (so->so_sc->sc_cc, "37000", "SQ207", "Control expression cannot be handled.");
 	placed = dfe_skip_exp_dfes (placed, &dfe, 1);
+        DO_BOX (op_table_t *, ot, inx, deps)
+          {
+            if (ot->ot_is_group_dummy && ot->ot_fref_ot && ot->ot_fref_ot->ot_dfe && ot->ot_fref_ot->ot_dfe->dfe_is_placed)
+              placed = ot->ot_fref_ot->ot_dfe;
+          }
+        END_DO_BOX;
 	dfe->_.control.terms = (df_elt_t ***) t_box_copy ((caddr_t) dfe->dfe_tree->_.comma_exp.exps);
 	DO_BOX (ST *, elt, inx, dfe->dfe_tree->_.comma_exp.exps)
 	  {
@@ -2235,11 +2270,15 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 		  {
 		    sqlo_place_exp (so, elt_dfe, pred);
 		  }
-		else
+		else if ((DFE_BOP == pred->dfe_type) || (DFE_BOP_PRED == pred->dfe_type))
 		  {
 		    sqlo_place_exp (so, pred, pred->_.bin.left);
 		    sqlo_place_exp (so, pred, pred->_.bin.right);
 		  }
+                else if (DFE_TEXT_PRED == pred->dfe_type)
+                  sqlc_new_error (so->so_sc->sc_cc, "37000", "SQ081", "Free-text or index-friendly spatial predicate can not appear in CASE WHEN conditional control operator, please rephrase the query");
+		else
+		  sqlo_place_exp (so, elt_dfe, pred);
 	      }
 	    else
 		sqlo_place_exp (so, elt_dfe, pred);
@@ -2251,7 +2290,7 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 	  }
 	END_DO_BOX;
 	placed = dfe_skip_exp_dfes (placed, &dfe, 1);
-	placed = dfe_skip_to_min_card (placed, super, dfe);
+	placed = dfe_skip_to_min_card (placed, super, dfe, 1);
 	so->so_mark_gb_dep = 1;
 	sqlo_place_dfe_after (so, pref_loc, placed, dfe);
 	return dfe;
@@ -2311,12 +2350,14 @@ sqlo_place_exp (sqlo_t * so, df_elt_t * super, df_elt_t * dfe)
 	  {
 	    placed = dfe_latest (so, n_args, args, 1);
 	    placed = dfe_skip_exp_dfes (placed, &dfe, 1);
-	    placed = dfe_skip_to_min_card (placed, super, dfe);
+	    placed = dfe_skip_to_min_card (placed, super, dfe, 0);
 	  }
 	so->so_mark_gb_dep = 1;
 	sqlo_place_dfe_after (so, pref_loc, placed, dfe);
 	return dfe;
       }
+    case DFE_FUN_REF:
+      return dfe;
     default:
       SQL_GPF_T1 (so->so_sc->sc_cc, "Bad dfe in sqlo_place_exp");
     }
@@ -2752,17 +2793,19 @@ sqlo_place_dt_set (sqlo_t * so, df_elt_t * tb_dfe, df_elt_t * dt_dfe, dk_set_t p
   int inx;
   if  (DFE_DT == dt_dfe->dfe_type)
     return (sqlo_place_dt_leaf (so, tb_dfe, dt_dfe, preds));
-  else
+  else if (DFE_QEXP == dt_dfe->dfe_type)
     {
       df_elt_t * copy = (df_elt_t *) t_box_copy ((caddr_t) dt_dfe);
       copy->_.qexp.terms = (df_elt_t **)  t_box_copy ((caddr_t) dt_dfe->_.qexp.terms);
       DO_BOX (df_elt_t *, term, inx, copy->_.qexp.terms)
 	{
-	  copy->_.qexp.terms[inx] = sqlo_place_dt_set (so, tb_dfe, term, preds);
+          df_elt_t * placed = sqlo_place_dt_set (so, tb_dfe, term, preds);
+	  copy->_.qexp.terms[inx] = placed ? placed : term;
 	}
       END_DO_BOX;
       return copy;
     }
+  return NULL;
 }
 
 
@@ -3331,9 +3374,7 @@ sqlo_merge_col_preds (sqlo_t * so, df_elt_t * tb_dfe, dk_set_t col_preds, dk_set
 
 extern caddr_t uname_one_of_these;
 
-#define IS_ONE_OF_THESE(name)  (0 == stricmp (name, "one_of_these")) 
 #define IS_ONE_OF_THESE(n) (n == uname_one_of_these)
-
 
 int do_sqlo_in_list = 1;
 
@@ -3384,11 +3425,14 @@ dbe_column_t *
 cp_left_col (df_elt_t * cp)
 {
   df_elt_t ** in_list;
-  if (DFE_BOP_PRED != cp->dfe_type
-      && DFE_BOP != cp->dfe_type)
+  if (DFE_BOP_PRED != cp->dfe_type && DFE_BOP != cp->dfe_type)
     return NULL;
   if (cp->_.bin.op != BOP_LT)
-    return cp->_.bin.left->_.col.col;
+    {
+      if (DFE_COLUMN != cp->_.bin.left->dfe_type)
+	SQL_GPF_T (NULL);
+      return cp->_.bin.left->_.col.col;
+    }
   in_list = sqlo_in_list (cp, NULL, NULL);
   if (in_list)
     return in_list[0]->_.col.col;
@@ -3423,7 +3467,8 @@ sqlo_key_part_best (dbe_column_t * col, dk_set_t col_preds, int upper_only)
 	    best_score = 5;
 	  }
       }
-    else if (!sqlo_in_list (cp, NULL, NULL) && DFE_COLUMN == cp->_.bin.left->dfe_type && cp->_.bin.left->_.col.col == col)
+    else if (!sqlo_in_list (cp, NULL, NULL) && !DFE_SHORTCUT(cp->_.bin.left) && 
+        DFE_COLUMN == cp->_.bin.left->dfe_type && cp->_.bin.left->_.col.col == col)
       {
 	if (cp->dfe_is_placed < DFE_GEN
 	    && (!upper_only || dfe_is_upper (cp)))
@@ -3877,6 +3922,8 @@ sqlo_tb_place_contains_cols (sqlo_t *so, df_elt_t *tb_dfe, df_elt_t *pred)
   if (pred->_.text.type == 'c' || pred->_.text.type == 'x')
     {
       dbe_key_t *text_key = tb_text_key (tb_dfe->_.table.ot->ot_table);
+      if (!text_key)
+        SQL_GPF_T1 (sc->sc_cc, "Table does not have text key");
       sqlo_place_exp (so, tb_dfe,
 	  sqlo_df (so,
 	    t_listst (3,
@@ -4176,8 +4223,10 @@ sqlo_tb_col_preds (sqlo_t * so, df_elt_t * tb_dfe, dk_set_t preds,
   int old_cond;
   DO_SET (df_elt_t *, pred, &preds)
     {
+#if 0
       if (!dfe_reqd_placed (pred))
 	bing (); /* pred references unplaced */
+#endif
       if (text_pred && dk_set_member (text_pred->_.text.after_preds, pred))
 	{ /*GK : this is already placed */
 	  continue;
@@ -4349,7 +4398,7 @@ sqlo_is_constant_pred_arg (sqlo_t *so, df_elt_t *pred, df_elt_t *cmp, int cmp_to
 {
   unsigned inx;
   df_elt_t *col = pred->_.bin.right->_.call.args[0];
-  collation_t * coll = DFE_COLUMN == col->dfe_type ? col->_.col.col->col_sqt.sqt_collation : NULL;
+  collation_t * coll = DFE_COLUMN == col->dfe_type && NULL != col->_.col.col ? col->_.col.col->col_sqt.sqt_collation : NULL;
   for (inx = 1; inx < BOX_ELEMENTS (pred->_.bin.right->_.call.args); inx++)
     {
       if (cmp_to_find == cmp_boxes ((caddr_t) pred->_.bin.right->_.call.args[inx]->dfe_tree,
@@ -5049,7 +5098,7 @@ sqlo_place_table (sqlo_t * so, df_elt_t * tb_dfe)
 {
   op_table_t * ot = dfe_ot (tb_dfe);
   dk_set_t nj_preds = NULL;
-  dk_set_t preds = NULL, large_preds = NULL;
+  dk_set_t preds = NULL, large_preds = NULL, contr_preds;
   df_elt_t *text_pred = NULL;
   tb_dfe->dfe_is_placed = DFE_PLACED;
   if (DFE_TABLE == tb_dfe->dfe_type && tb_dfe->_.table.is_leaf)
@@ -5132,8 +5181,10 @@ next_pred:
 	      else
 		t_set_push (&preds, pred);
 	    }
-	  else if (pred->dfe_type != DFE_TEXT_PRED)
-	    { /*GK: place and push only the non-text dependent preds */
+	  else if (pred->dfe_type != DFE_TEXT_PRED &&
+              !(DFE_TABLE == tb_dfe->dfe_type && tb_dfe->_.table.ot->ot_is_outer && sqlo_pred_contradiction (so, pred, 1)))
+	    { /*GK: place and push only the non-text dependent preds,
+              also do not put contradiction on right side of outer */
 	      pred->dfe_is_placed = DFE_PLACED;
 	      t_set_push (&preds, pred);
 	    }
@@ -5153,29 +5204,27 @@ next_pred:
       t_set_push (&preds, text_pred);
     }
   sqlo_place_dfe_after (so, tb_dfe->dfe_locus, so->so_gen_pt, tb_dfe);
+  contr_preds = preds;
+  if (ot->ot_join_preds && !ot->ot_is_outer)
     {
-      dk_set_t contr_preds = preds;
-      if (ot->ot_join_preds && !ot->ot_is_outer)
-	{
-	  contr_preds = t_NCONC (t_set_copy (contr_preds), t_set_copy (ot->ot_join_preds));
-	}
-      if (large_preds)
-	{
-	  contr_preds = t_NCONC (t_set_copy (contr_preds), t_set_copy (large_preds));
-	}
-      sqlo_tb_check_contradiction (so, tb_dfe, contr_preds);
-      if (!so->so_this_dt->ot_is_contradiction)
-	sqlo_tb_check_invariant_preds (so, tb_dfe, contr_preds);
+      contr_preds = t_NCONC (t_set_copy (contr_preds), t_set_copy (ot->ot_join_preds));
     }
-
-  if (ot->ot_join_preds && !ST_P (ot->ot_dt, PROC_TABLE))
+  if (large_preds)
     {
-      if (ot->ot_is_outer)
+      contr_preds = t_NCONC (t_set_copy (contr_preds), t_set_copy (large_preds));
+    }
+  sqlo_tb_check_contradiction (so, tb_dfe, contr_preds);
+  if (!so->so_this_dt->ot_is_contradiction)
+    sqlo_tb_check_invariant_preds (so, tb_dfe, contr_preds);
+
+  if (!ST_P (ot->ot_dt, PROC_TABLE))
+    {
+      if (ot->ot_is_outer && (ot->ot_join_preds || !so->so_identity_joins)) /* quietcast option is special case see so flag */
 	{
 	  nj_preds = preds;
-	  preds = ot->ot_join_preds;
+          preds = ot->ot_join_preds;
 	}
-      else
+      else if (ot->ot_join_preds)
 	{
 	  /* for a qualified inner join the join preds and applicable where preds go into the same list. */
 	  preds = dk_set_conc (preds, ot->ot_join_preds);
@@ -5201,9 +5250,6 @@ next_pred:
 	{
 	  df_elt_t * dt_dfe;
 	  dt_dfe = so->so_this_dt->ot_work_dfe; /* the after join test is in the loc of the enclosing dt, not of the outer table */
-	  /*if (tb_dfe->_.sub.generated_dfe->dfe_type != DFE_DT)
-	    SQL_GPF_T1 (so->so_sc->sc_cc,
-		"an outer union must be wrapped into a dt in order to have an after join test");*/
 	  if (tb_dfe->_.sub.generated_dfe->dfe_type == DFE_DT)
 	    {
 	      tb_dfe->_.sub.generated_dfe->_.sub.after_join_test =
@@ -5222,15 +5268,6 @@ next_pred:
     {
       tb_dfe->_.table.all_preds = preds;
       so->so_gen_pt = tb_dfe;
-#if 0 /*GK: no need to */
-      DO_SET (op_virt_col_t *, vc, &ot->ot_virtual_cols)
-	{
-	  df_elt_t *vc_dfe = sqlo_df_virt_col (so, vc);
-	  if (vc->vc_is_out)
-	    sqlo_place_exp (so, tb_dfe->dfe_super, vc_dfe);
-	}
-      END_DO_SET ();
-#endif
       sqlo_tb_col_preds (so, tb_dfe, preds, nj_preds);
       if (nj_preds)
 	{
@@ -5468,10 +5505,11 @@ sqlo_hash_redundant_keys (sqlo_t * so, dk_set_t * hash_refs_ret, dk_set_t * hash
 void
 sqlo_check_col_pred_placed (df_elt_t * tb_dfe)
 {
-  return;
+#if 0
   DO_SET (df_elt_t *, cp, &tb_dfe->_.table.col_preds)
     if (!cp->dfe_is_placed) bing ();
   END_DO_SET();
+#endif
 }
 
 
@@ -6093,6 +6131,8 @@ sqlo_dt_unplace (sqlo_t * so, df_elt_t * start_dfe)
   L2_ASSERT_CONNECTION(start_dfe->dfe_super->_.sub.first, start_dfe, dfe_)
   L2_ASSERT_CONNECTION(start_dfe, start_dfe->dfe_super->_.sub.last, dfe_)
 #ifndef L2_DEBUG
+  if (!start_dfe->dfe_prev)
+    SQL_GPF_T(so->so_sc->sc_cc);
   start_dfe->dfe_prev->dfe_next = NULL;
   start_dfe->dfe_super->_.sub.last = start_dfe->dfe_prev;
 /* Note '#ifdef L2_DEBUG' in sqlo_dfe_unplace */
@@ -6629,6 +6669,7 @@ int brk_dt_plan;
 void
 sqlo_check_order_dbg (op_table_t * ot)
 {
+#ifdef DEBUG
   df_elt_t * dfe;
   char * pref;
   int nth = 0, n;
@@ -6649,6 +6690,7 @@ sqlo_check_order_dbg (op_table_t * ot)
 	  return;
 	}
     }
+#endif
 }
 
 
@@ -6823,7 +6865,7 @@ int
 sqlo_no_more_time (sqlo_t * so, op_table_t * ot)
 {
   /* every so often, see if the best plan's time is less than the time to compile so far. If so, no point in further scenarios */
-  uint32 now;
+  time_msec_t now;
   if (!so->so_best || !so->so_any_with_this_first)
 	return 0;
   if (sqlo_max_mp_size > 0 && THR_TMP_POOL->mp_bytes > (so->so_max_memory / 20) * 19)
@@ -6944,15 +6986,20 @@ sqlo_best_exceeded (sqlo_t * so, op_table_t * ot, float this_score)
 
 
 void sqlo_layout_1 (sqlo_t * so, op_table_t * ot, int is_top);
-int sqlo_layout_min_quota = 1500000;
+size_t sqlo_layout_min_quota = 1500000;
 
 void
 sqlo_layout_lim (sqlo_t * so, op_table_t * ot, int is_top)
 {
-  int max = so->so_max_memory;
-  int changed = 0, bytes = THR_TMP_POOL->mp_bytes;
-  int next_quota =  (max - bytes) / 3;
-  if (next_quota > sqlo_layout_min_quota)
+  int changed = 0;
+  size_t max = so->so_max_memory;
+  size_t bytes = THR_TMP_POOL->mp_bytes;
+  ssize_t next_quota = ((ssize_t)max - (ssize_t)bytes) / 3;
+  /*
+   * here is a weird way it works, if max mp set, start with some part of it, put a lower limit to see if fits,
+   * next time increase up to max +25% this helps to do not try to fit in max at once,
+   */
+  if (next_quota > sqlo_layout_min_quota && (bytes + next_quota) < ((sqlo_max_mp_size / 3) * 4))
     {
       so->so_max_memory = bytes + next_quota;
       changed = 1;
@@ -6996,7 +7043,7 @@ sqlo_layout_1 (sqlo_t * so, op_table_t * ot, int is_top)
     {
       if (so->so_best) /* log a error */
 	{
-	  log_error ("The memory pool size %d reached the limit %d bytes, using the last best score.",
+	  log_error ("The memory pool size %zd reached the limit %zd bytes, using the last best score.",
 	      (THR_TMP_POOL)->mp_bytes, sqlo_max_mp_size);
 	  return;
 	}
@@ -7173,7 +7220,9 @@ sqlo_layout_1 (sqlo_t * so, op_table_t * ot, int is_top)
 	      sqlo_print (("New best %s is:\n", ot->ot_new_prefix));
 	      sqlo_scenario_summary (ot->ot_work_dfe, this_score);
 	    }
+#if 0
 	  if (brk_dt_plan && brk_dt_plan == OT_NO (ot->ot_new_prefix)) bing ();
+#endif
 	  if (ot->ot_first_dfe && (DFE_TABLE == ot->ot_first_dfe->dfe_type || DFE_DT == ot->ot_first_dfe->dfe_type))
 	    {
 	      ot->ot_first_dfe->_.table.ot->ot_any_plan = 1;
@@ -7332,7 +7381,7 @@ sqlo_layout (sqlo_t * so, op_table_t * ot, int is_top, df_elt_t * super)
 	    lisp_throw (CATCH_SQLO_NO_MEM, 1);
 	  else
 	    sqlc_error (so->so_sc->sc_cc, "42000",
-			"The memory pool size %d reached the limit %d bytes, try to increase the MaxMemPoolSize ini setting.",
+			"The memory pool size %zd reached the limit %zd bytes, try to increase the MaxMemPoolSize ini setting.",
 			(THR_TMP_POOL)->mp_bytes, sqlo_max_mp_size);
 	}
     }
@@ -7477,6 +7526,11 @@ dfe_body_copy (sqlo_t * so, df_elt_t * super, df_elt_t * parent)
     }
   else
     {
+      if (!DFE_IS_SUB(super))
+        sqlc_new_error (so->so_sc->sc_cc, "37000", "SQI06", "Internal error in SQL compiler: dfe_body_copy in non container");
+      if (!super->_.sub.first)
+        sqlc_new_error (so->so_sc->sc_cc, "42000", "SQI03", "Internal error in SQL compiler: dfe_body_copy first = 0");
+
       for (elt = super->_.sub.first->dfe_next; elt; elt = elt->dfe_next)
 	{
 	  df_elt_t * copy_elt = sqlo_layout_copy_1 (copy_super->dfe_sqlo, elt, copy_super);
@@ -7526,6 +7580,8 @@ inx_op_copy (sqlo_t * so, df_inx_op_t * dio,
   else if (dio->dio_terms)
     {
       s_node_t *iter;
+      if (!IS_BOX_POINTER(dio->dio_terms))
+        sqlc_new_error (so->so_sc->sc_cc, "42000", "SQI05", "Internal error in SQL compiler: non inx op in inx copy");
       copy->dio_terms = t_set_copy (dio->dio_terms);
       DO_SET_WRITABLE (df_inx_op_t *, term, iter, &copy->dio_terms)
 	{
@@ -8085,7 +8141,7 @@ sqlp_convert_or_to_union (sqlo_t * so, ST **ptree)
 	}
       END_DO_SET ();
       new_tree = sqlp_view_def (NULL, new_tree, 1);
-      new_tree = sqlc_union_dt_wrap (new_tree);
+      new_tree = sqlc_union_dt_wrap (so->so_sc, new_tree);
       sqlo_unor_replace_col_refs (so, &orig_sel, (ST *)new_tree->_.select_stmt.selection, sqlp_union_tree_select (tree));
       new_tree->_.select_stmt.selection = (caddr_t *) orig_sel;
       *ptree = new_tree;
@@ -8217,7 +8273,7 @@ sqlo_top (sql_comp_t * sc, ST ** volatile ptree, float * volatile score_ptr)
 	   ST_P (tree, INTERSECT_ALL_ST))
 	{
 	  tree = sqlp_view_def (NULL, tree, 1);
-	  tree = sqlc_union_dt_wrap (tree);
+	  tree = sqlc_union_dt_wrap (sc, tree);
 	  *ptree = tree;
 	}
       ret = sqlo_top_1 (so, sc, ptree);

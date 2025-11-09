@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -81,7 +81,7 @@ void itc_free_owned_params (it_cursor_t * itc);
 #define NEW_PLH(v) \
   placeholder_t * v = (placeholder_t*) dk_alloc_box_zero (sizeof (placeholder_t), DV_ITC); \
   v->itc_type = ITC_PLACEHOLDER;
-placeholder_t * plh_allocate ();
+placeholder_t * plh_allocate (void);
 int dv_compare (db_buf_t dv1, db_buf_t dv2, collation_t *collation, unsigned short offset);
 int dv_compare_spec (db_buf_t db, search_spec_t * spec, it_cursor_t * it);
 dp_addr_t leaf_pointer (db_buf_t row, dbe_key_t * key);
@@ -206,7 +206,7 @@ void itc_read_ahead_blob (it_cursor_t * itc, struct ra_req_s *ra, int flags);
 
 void itc_read_ahead (it_cursor_t * itc, buffer_desc_t ** buf_ret);
 struct ra_req_s * itc_read_aside (it_cursor_t * itc, buffer_desc_t * buf, dp_addr_t dp);
-int em_trigger_ra (extent_map_t * em, dp_addr_t ext_dp, uint32 now, int window, int threshold);
+int em_trigger_ra (extent_map_t * em, dp_addr_t ext_dp, time_msec_t now, int window, int threshold);
 int em_ext_ra_pages (extent_map_t * em, it_cursor_t * itc, dp_addr_t ext_dp, dp_addr_t * leaves, int max, dp_addr_t except_dp, dk_hash_t * except);
 
 void dbs_timeout_read_history (dbe_storage_t * dbs);
@@ -248,6 +248,10 @@ buffer_desc_t * page_fault (it_cursor_t * it, dp_addr_t dp);
 buffer_desc_t * page_fault_map_sem (it_cursor_t * it, dp_addr_t dp, int stay_inside);
 #define PF_STAY_ATOMIC 1
 
+#ifndef NDEBUG
+void bing(void);
+#endif
+
 #if defined (MTX_DEBUG) && !defined (PAGE_DEBUG)
 #define PAGE_DEBUG
 #endif
@@ -255,7 +259,7 @@ buffer_desc_t * page_fault_map_sem (it_cursor_t * it, dp_addr_t dp, int stay_ins
 #ifdef PAGE_DEBUG
 
 void buf_prot_read (buffer_desc_t * buf);
-void buf_prot_WRITE (buffer_desc_t * buf);
+void buf_prot_write (buffer_desc_t * buf);
 
 #define BUF_PW(buf) buf_prot_write (buf)
 #define BUF_PR(buf) buf_prot_read (buf)
@@ -400,7 +404,7 @@ void gen_qmsort (int * in, int * left,
 	    int n_in, sort_cmp_func_t cmp, void* cd, int key_bytes);
 
 void bp_flush (buffer_pool_t * bp, int wait);
-void mt_flush_all ();
+void mt_flush_all (void);
 int page_set_length (buffer_desc_t * buf);
 int bp_buf_enter (buffer_desc_t * buf, it_map_t ** itm_ret);
 buffer_desc_t * bp_get_buffer_1  (buffer_pool_t * bp, buffer_pool_t ** pool_for_action, int mode);
@@ -514,7 +518,7 @@ int  pg_row_check (buffer_desc_t * buf, int irow, int gpf_on_err);
 
 void pg_check_map (buffer_desc_t * buf);
 #else
-#define pg_check_map(buf)
+#define pg_check_map(buf)	((void)0)
 #endif
 int pg_room (db_buf_t page);
 
@@ -551,6 +555,7 @@ void * pm_get (buffer_desc_t * buf, size_t sz);
 index_tree_t *DBG_NAME (it_allocate) (DBG_PARAMS dbe_storage_t *);
 index_tree_t *DBG_NAME (it_temp_allocate) (DBG_PARAMS dbe_storage_t *);
 int DBG_NAME (it_temp_free) (DBG_PARAMS index_tree_t * it);	/*!< \returns zero is the \c it is actually kept, just with smaller it_ref_count; non-zero means real free */
+void it_temp_write_cancel (index_tree_t *tree);
 #ifdef MALLOC_DEBUG
 #define it_allocate(s) dbg_it_allocate (__FILE__, __LINE__, (s))
 #define it_temp_allocate(s) dbg_it_temp_allocate (__FILE__, __LINE__, (s))
@@ -563,16 +568,25 @@ void it_not_in_any (du_thread_t * self, index_tree_t * except);
 extern buffer_desc_t * buffer_allocate (int type);
 extern void buffer_free (buffer_desc_t * buf);
 extern void buffer_set_free (buffer_desc_t* ps);
-#ifdef MTX_DEBUG
-int buf_set_dirty (buffer_desc_t * buf);
-int buf_set_dirty_inside (buffer_desc_t * buf);
+
+#if defined(BUF_FLAGS_DEBUG) | defined(PAGE_DEBUG)
+#define BUF_SET_IS_DIRTY(b,f) do { ((b)->bd_is_dirty = (f)); (b)->bd_set_dirty_file = __FILE__; (b)->bd_set_dirty_line = __LINE__; } while(0)
 #else
-#define buf_set_dirty(b)  ((b)->bd_is_dirty = 1)
-#define buf_set_dirty_inside(b)  ((b)->bd_is_dirty = 1)
+#define BUF_SET_IS_DIRTY(b,f) ((b)->bd_is_dirty = (f))
 #endif
 
-#define cl_enlist_ck(it, buf)
-#define cl_set_slice(cli, clm, slice, err)
+#if defined(MTX_DEBUG) | defined(BUF_FLAGS_DEBUG) | defined(PAGE_DEBUG)
+int buf_set_dirty_1 (char *file, int line, buffer_desc_t * buf);
+int buf_set_dirty_inside_1 (char *file, int line, buffer_desc_t * buf);
+#define buf_set_dirty(b) buf_set_dirty_1(__FILE__, __LINE__, b)
+#define buf_set_dirty_inside(b) buf_set_dirty_inside_1(__FILE__, __LINE__, b)
+#else
+#define buf_set_dirty(b)  BUF_SET_IS_DIRTY(b,1)
+#define buf_set_dirty_inside(b)  BUF_SET_IS_DIRTY(b,1)
+#endif
+
+#define cl_enlist_ck(it, buf)			((void)0)
+#define cl_set_slice(cli, clm, slice, err)	((void)0)
 
 void wi_new_dirty (buffer_desc_t * buf);
 
@@ -620,7 +634,7 @@ extern char srv_approx_dt[DT_LENGTH];
 int box_length_on_row (caddr_t val);
 void pfh_init (pf_hash_t * pfh, buffer_desc_t * buf);
 extern resource_t * pfh_rc;
-pf_hash_t * pfh_allocate ();
+pf_hash_t * pfh_allocate (void);
 void pfh_free (pf_hash_t * pfh);
 short pfh_var (pf_hash_t * pfh, dbe_col_loc_t * cl, db_buf_t str, int len, unsigned short * prefix_bytes, unsigned short * prefix_ref, dtp_t * extra, int mode);
 row_size_t  row_space_after (buffer_desc_t * buf, short irow);
@@ -825,6 +839,7 @@ extern FILE *http_log;
 extern char * http_soap_client_id_string;
 extern char * http_client_id_string;
 extern char * http_server_id_string;
+extern uint32 http_default_client_req_timeout;
 extern long http_ses_trap;
 extern unsigned long cfg_scheduler_period ;
 extern long callstack_on_exception;
@@ -923,7 +938,7 @@ long sf_log (caddr_t * replicate);
 
 /* mtwrite.c */
 
-int dbs_dirty_count ();
+int dbs_dirty_count (void);
 void buf_cancel_write (buffer_desc_t * buf);
 void buf_release_read_waits (buffer_desc_t * buf, int itc_state);
 void mt_write_start (int n_oldest);
@@ -1094,7 +1109,7 @@ caddr_t registry_remove (char *name);
 int dbs_write_registry (dbe_storage_t * dbs);
 void dbs_init_registry (dbe_storage_t * dbs);
 void db_replay_registry_sequences (void);
-void cli_bootstrap_cli ();
+void cli_bootstrap_cli (void);
 void db_log_registry (dk_session_t * log);
 void registry_update_sequences (void);
 caddr_t box_deserialize_string (caddr_t text, int opt_len, int64 offset);
@@ -1139,8 +1154,8 @@ OFF_T dbs_extend_stripes (dbe_storage_t * dbs);
 
 /* auxfiles.c */
 dbe_storage_t *dbs_from_file (char * name, char * file, char type, volatile int * exists);
-void _dbs_read_cfg (dbe_storage_t * dbs, char *file);
-extern void (*dbs_read_cfg) (caddr_t * dbs, char *file);
+void _dbs_read_cfg (dbe_storage_t * dbs, const char *file);
+extern void (*dbs_read_cfg) (caddr_t * dbs, const char *file);
 dk_set_t _cfg_read_storages (caddr_t **temp_storage);
 extern dk_set_t (*dbs_read_storages) (caddr_t **temp_file);
 extern int freeing_unfreeable;
@@ -1272,7 +1287,7 @@ extern long bp_last_pages;
 extern int correct_parent_links;
 extern long file_extend;
 extern int32 c_checkpoint_sync;
-extern void (*db_read_cfg) (caddr_t * dbs, char *mode);
+extern void (*db_read_cfg) (caddr_t * dbs, const char *mode);
 extern dk_mutex_t *time_mtx;
 extern dk_mutex_t * old_roots_mtx;
 extern buffer_desc_t * old_root_images;
@@ -1281,10 +1296,11 @@ extern int is_crash_dump;
 extern int32 cpt_remap_recovery;
 
 extern void (*db_exit_hook) (void);
-extern long last_flush_time;
-extern long last_exec_time;	/* used to know when the system is idle */
+extern time_msec_t last_flush_time;
+extern time_msec_t last_exec_time;	/* used to know when the system is idle */
 
 extern unsigned long int cfg_autocheckpoint;	/* Defined in disk.c */
+extern int32 c_soft_checkpoint;	/* Defined in disk.c */
 extern int32 c_checkpoint_interval;
 extern dk_mutex_t * checkpoint_mtx;
 extern int32 cl_run_local_only;
@@ -1301,7 +1317,7 @@ extern int main_thread_ready;
 extern void resources_reaper (void);
 extern int auto_cpt_scheduled;
 
-extern long write_cum_time;
+extern int64 write_cum_time;
 extern int is_read_pending;
 extern int32 bp_n_bps;
 
@@ -1328,7 +1344,7 @@ extern long cfg_disable_vdb_stat_refresh;
 #define VD_ARRAY_PARAMS_ALL  2
 
 extern long vd_opt_arrayparams;
-extern unsigned long checkpointed_last_time;
+extern time_msec_t checkpointed_last_time;
 extern long vsp_in_dav_enabled;
 
 extern int disk_no_mt_write;
@@ -1345,13 +1361,14 @@ typedef enum { SQW_OFF, SQW_ON, SQW_ERROR } sqw_mode;
 extern sqw_mode sql_warning_mode;
 extern long sql_warnings_to_syslog;
 extern long temp_db_size;
+extern int64 dbs_max_temp_db_pages;
 
 void
 srv_set_cfg(
     void (*replace_log)(char *str),
     void (*set_checkpoint_interval)(int32 f),
-    void (*read_cfg)(caddr_t * it, char *mode),
-    void (*s_read_cfg)(caddr_t * it, char *mode),
+    void (*read_cfg)(caddr_t * it, const char *mode),
+    void (*s_read_cfg)(caddr_t * it, const char *mode),
     dk_set_t (*read_storages)(caddr_t **temp_file)
     );
 
@@ -1406,7 +1423,7 @@ void dbs_cpt_set_allocated (dbe_storage_t * dbs, dp_addr_t dp, int is_allocd);
 dp_addr_t em_free_count (extent_map_t * em, int type);
 void dbs_ec_enter (dbe_storage_t * dbs);
 void dbs_ec_leave (dbe_storage_t * dbs);
-void clear_old_root_images  ();
+void clear_old_root_images  (void);
 
 extern dk_mutex_t * extent_map_create_mtx;
 #define WAIT_IF(msec) if (msec) virtuoso_sleep ((msec) /1000, 1000 * ((msec) % 1000));
@@ -1425,7 +1442,7 @@ void  memzero (void* p, int len);
 void memcpy_16 (void * target, const void * source, size_t len);
 void memcpy_16_nt (void * t, const void * s, size_t len);
 void memmove_16 (void * t, const void * s, size_t len);
-unsigned  int64 rdtsc();
+unsigned  int64 rdtsc(void);
 
 extern int aq_max_threads;
 extern int in_log_replay;

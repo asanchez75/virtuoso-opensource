@@ -6,7 +6,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -40,8 +40,8 @@ typedef struct wcharset_s {
   caddr_t *chrs_aliases;
 } wcharset_t;
 
-#define CHARSET_UTF8	(((wcharset_t *)NULL)+1)
-#define CHARSET_WIDE	(((wcharset_t *)NULL)+2) /* not supported in many places, use only after double-check! */
+#define CHARSET_UTF8	((wcharset_t *)(ptrlong)1)
+#define CHARSET_WIDE	((wcharset_t *)(ptrlong)2)	/*!< not supported in many places, use only after double-check! */
 
 #define CHARSET_NAME(c,d) ((char *) (c != NULL ? \
     (((wcharset_t *)c) != CHARSET_UTF8 ? ((wcharset_t *)c)->chrs_name : "UTF-8") : d))

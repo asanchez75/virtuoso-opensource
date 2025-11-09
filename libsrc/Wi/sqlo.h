@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -27,13 +27,12 @@
 
 #ifndef _SQLO_H
 #define _SQLO_H
-
+#include "sqlcmps.h"
 typedef struct df_elt_s df_elt_t;
+typedef struct dfe_reuse_s dfe_reuse_t;
 typedef struct sqlo_s sqlo_t;
 typedef struct locus_s locus_t;
-#ifdef __cplusplus
 typedef struct remote_ds_s remote_ds_t;
-#endif
 
 
 typedef struct ot_virt_col_s
@@ -48,16 +47,13 @@ typedef struct op_table_s
   caddr_t		ot_prefix;
   caddr_t	ot_new_prefix;
   dbe_table_t * 	ot_table;
-#ifdef __cplusplus
   remote_ds_t *	ot_rds;
-#else
-  struct remote_ds_t *	ot_rds;
-#endif
   ST *	ot_dt;
   ST *	ot_left_sel;
   ST *	ot_join_cond;
   ST *	ot_enclosing_where_cond; /* optional or other ot can add a condition to the top level where of the enclosing dt */
   int	ot_is_outer;
+  char  ot_is_left;
   oid_t	ot_u_id;
   oid_t	ot_g_id;
   dk_set_t		ot_table_refd_cols; /* if the ot is a table, which cols are refd. Use for knowing if index only is possible in costing */
@@ -77,6 +73,7 @@ typedef struct op_table_s
   df_elt_t *	ot_work_dfe;
   char 	ot_is_contradiction;
   char	ot_is_group_dummy;	/*!< Fictive table corresponding to a group by's results. fun refs depend alone on this and this depends on all other tables */
+  struct op_table_s *  ot_fref_ot; /*!< table to which belongs dummy fref */
   dk_set_t	ot_oby_ots;	/*!< For a dt, the component ots in the oby order */
   dk_set_t 	ot_order_cols;	/*!< for a table in an ordered from, the subset of the oby pertaining to this table */
   char 	ot_order_dir;
@@ -176,7 +173,13 @@ typedef struct df_inx_op_s
 
 #define DFE_TEXT_PRED 101
 
-
+#define DFE_SHORTCUT(dfe) (DFE_TRUE == (dfe) || DFE_FALSE == (dfe))
+#define DFE_IS_SUB(d) (d && \
+    (DFE_HEAD == (d)->dfe_type || \
+     DFE_DT == (d)->dfe_type || \
+     DFE_PRED_BODY == (d)->dfe_type || \
+     DFE_VALUE_SUBQ == (d)->dfe_type || \
+     DFE_EXISTS == (d)->dfe_type))
 
 
 #define DFE_PLACED 1	/* placed in a scenario */
@@ -486,9 +489,9 @@ struct sqlo_s
   df_elt_t *	so_crossed_oby; /* If placing exp and there is an oby that is crossed, then set this to be the oby so that the exp can be added to its deps */
   dk_set_t	so_crossed_setps;
   df_elt_t *	so_context_dt;
-  uint32	so_last_sample_time; /* used for stopping compilation if longer is elapsed since last sample than the best plan's time */
+  time_msec_t	so_last_sample_time; /* used for stopping compilation if longer is elapsed since last sample than the best plan's time */
   int32		so_max_layouts;
-  int32		so_max_memory;
+  size_t	so_max_memory;
   int		so_nth_select_col; /* the position in select list for which an exp is being generated.  Used for adding dependent cols to oby when adding cols to dts  when doing ref from enclosing dt */
   char		so_identity_joins;
   char		so_cache_subqs;
@@ -556,7 +559,7 @@ typedef struct tb_sample_s
   data_col_t *	smp_dcs;
   float		smp_card;
   float		smp_inx_card;
-  int		smp_time;
+  time_msec_t	smp_time;
   float *	smp_dep_sel; /* if contains samples on dependent cols, selectivity in order of dep conditions */
 } tb_sample_t;
 

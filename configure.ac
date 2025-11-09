@@ -5,7 +5,7 @@ AC_PREREQ(2.59)
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -30,8 +30,8 @@ AC_PREREQ(2.59)
 
 m4_define(vos_major,	[7])
 m4_define(vos_minor,	[2])
-m4_define(vos_patch,	[6])
-m4_define(vos_devel,	[-rc1])
+m4_define(vos_patch,	[17])
+m4_define(vos_devel,	[-dev])
 
 AC_INIT([Virtuoso Open Source Edition (Column Store)],
 	vos_major.vos_minor.vos_patch[]vos_devel,
@@ -56,6 +56,7 @@ dnl	AM_INIT_AUTOMAKE([1.6])
 dnl	AM_INIT_AUTOMAKE([1.7])
 dnl	AM_INIT_AUTOMAKE([1.8])
 dnl	AM_INIT_AUTOMAKE([1.9 tar-ustar])
+dnl	AM_INIT_AUTOMAKE([1.16 tar-ustar subdir-objects])
 dnl
 AM_INIT_AUTOMAKE([1.9 tar-ustar])
 
@@ -400,7 +401,7 @@ dnl OBSOLETE AC_INT_16_BITS	dnl now checked by AC_CHECK_SIZE(int)
 #
 if test "x$ac_cv_sizeof_void_p" != 'x8'
 then
-    AC_ERROR([The current version of $PACKAGE_NAME can only be build on 64bit platforms])
+    AC_ERROR([The current version of $PACKAGE_NAME can only be built on 64bit platforms])
 fi
 
 ##########################################################################
@@ -430,7 +431,7 @@ AC_PATH_PROG(FLEX, flex, flex)
 AC_PATH_PROG(GAWK, gawk, gawk)
 AC_PATH_PROG(GPERF, gperf, gperf)
 AC_PATH_PROG(PERL, perl, perl)
-AC_PATH_PROG(PYTHON, python, python)
+AM_PATH_PYTHON([2.7.5])
 AC_PATH_PROG(RUBY, ruby, ruby)
 #AC_DECL_YYTEXT
 
@@ -591,7 +592,7 @@ AC_CHECK_FUNCS(getrusage)
 AC_CHECK_FUNCS(memmove memmem memcpy)
 AC_CHECK_FUNCS(mkstemp64 mkstemp)
 AC_CHECK_FUNCS(strftime stpcpy)
-AC_CHECK_FUNCS(clock_gettime gethrtime)
+AC_CHECK_FUNCS(gethrtime)
 
 AC_MSG_CHECKING(for sys_errlist)
 AC_TRY_LINK([
@@ -631,6 +632,17 @@ AC_CACHE_CHECK([whether __va_copy exists], ac_cv_have___va_copy, [
 if test "x$ac_cv_have___va_copy" = "xyes" ; then
 	AC_DEFINE(HAVE___VA_COPY, 1, [Define if __va_copy exists])
 fi
+
+
+##########################################################################
+##                                                                     ##
+##check for clock_gettime which may require an extra library           ##
+##                                                                     ##
+##########################################################################
+AC_SEARCH_LIBS(clock_gettime, [rt posix4], [
+       AC_DEFINE([HAVE_CLOCK_GETTIME], [1], [Define to 1 if you have the clock_gettime function.])
+])
+
 
 ##########################################################################
 ##									##
@@ -841,13 +853,16 @@ AC_HELP_STRING([--disable-openssl], [disable OpenSSL support])dnl
 
 if test "x$openssl_dir" = "xno"
 then
+    openssl_VERSION=""
     openssl_CFLAGS=""
     openssl_LDFLAGS=""
 elif test "x$openssl_dir" = "x/usr"
 then
+    openssl_VERSION=`openssl version`
     openssl_CFLAGS=""
     openssl_LDFLAGS="-lssl -lcrypto"
 else
+    openssl_VERSION=`$openssl_dir/bin/openssl version`
     openssl_CFLAGS="-I$openssl_dir/include"
     openssl_LDFLAGS="-L$openssl_dir/lib -lssl -lcrypto"
 fi
@@ -899,13 +914,15 @@ then
 	/* LibreSSL defines OPENSSL_VERSION_NUMBER 0x20000000L but uses a compatible API to OpenSSL v1.0.x */
 	#elif OPENSSL_VERSION_NUMBER < 0x1020000fL
 	/* OpenSSL versions 0.9.8e - 1.1.1 are supported */
+       #elif OPENSSL_VERSION_NUMBER < 0x30700000L
+       /* OpenSSL versions 3.0.x - 3.6.x are supported */
 	#else
 	#error OpenSSL version too new
 	#endif
 	    ],[
-	      AC_MSG_RESULT([<= 1.1.1])
+             AC_MSG_RESULT([$openssl_VERSION is supported])
 	    ],[
-	      AC_MSG_ERROR([OpenSSL version 1.2.0 or greater is currently not supported.])
+             AC_MSG_ERROR([$openssl_VERSION is currently not supported.])
 	    ])
 
 	AC_MSG_CHECKING([usability of the OpenSSL header files and library in ${openssl_dir}])
@@ -1308,7 +1325,7 @@ main ()
 [
   AC_MSG_RESULT([bad. Check config.log for details])
   with_proj4="no"
-  AC_MSG_WARN([The proj4 plugin will not be build])
+  AC_MSG_WARN([The proj4 plugin will not be built])
 ])
 
     LIBS="$save_LIBS"
@@ -1389,7 +1406,7 @@ main ()
 [
   AC_MSG_RESULT([bad. Check config.log for details])
   with_geos="no"
-  AC_MSG_WARN([The geos plugin will not be build])
+  AC_MSG_WARN([The geos plugin will not be built])
 ])
 
     LIBS="$save_LIBS"
@@ -1462,6 +1479,31 @@ AC_SUBST(SHAPEFILEIO_LIBS)
 
 ##########################################################################
 #                                                                        #
+# graphql  								 #
+#                                                                        #
+##########################################################################
+AC_ARG_ENABLE(graphql, [dnl
+AC_HELP_STRING([--enable-graphql(=DIR)], [enable the graphql plugin (default)])
+AC_HELP_STRING([--disable-graphql], [disable the graphql plugin])dnl
+], [
+     case "${enableval}" in
+       yes)	with_graphql="yes" ;;
+       no)	with_graphql="no" ;;
+       /*)	with_graphql="${enableval}" ;;
+       *)	AC_MSG_ERROR(bad value ${enableval} for --enable-graphql) ;;
+     esac
+  ],
+  [ with_graphql="yes" ]
+)
+
+AM_CONDITIONAL(WITH_GRAPHQL, test "x$with_graphql" != "xno" )
+AC_SUBST(GRAPHQL_CPPFLAGS)
+AC_SUBST(GRAPHQL_LDFLAGS)
+AC_SUBST(GRAPHQL_LIBS)
+
+
+##########################################################################
+#                                                                        #
 # HSLookup								 #
 #                                                                        #
 ##########################################################################
@@ -1485,7 +1527,7 @@ then
 
     if test "x$HS_LOOKUP" = "xnotfound"
     then
-       AC_MSG_WARN([The hslookup plugin will not be build])
+       AC_MSG_WARN([The hslookup plugin will not be built])
        with_hsl=no
     fi
 fi
@@ -1535,7 +1577,7 @@ main ()
 [
   AC_MSG_RESULT([bad. Check config.log for details])
   with_hsl="no"
-  AC_MSG_WARN([The hslookup plugin will not be build])
+  AC_MSG_WARN([The hslookup plugin will not be built])
 ])
 
     LIBS="$save_LIBS"
@@ -1579,7 +1621,7 @@ PKG_CHECK_MODULES_STATIC(IM, MagickWand, [], [
 	IM_CFLAGS=`"$IM_CONFIG" --cflags`
 	IM_LIBS=`"$IM_CONFIG" --libs --static`
     else
-	AC_MSG_WARN([The ImageMagick plugin will not be build])
+	AC_MSG_WARN([The ImageMagick plugin will not be built])
 	with_im=no
     fi
 ])
@@ -1618,7 +1660,7 @@ main ()
 [
   AC_MSG_RESULT([bad. Check config.log for details])
   with_im="no"
-  AC_MSG_WARN([The ImageMagick plugin will not be build])
+  AC_MSG_WARN([The ImageMagick plugin will not be built])
 ])
 
     LIBS="$save_LIBS"
@@ -2888,6 +2930,20 @@ AC_HELP_STRING([--disable-tutorial-vad], [disable Tutorial vad package (default)
   [ with_tutorial_vad="no" ]
 )
 
+AC_ARG_ENABLE(websockets-vad, [dnl
+AC_HELP_STRING([--enable-websockets-vad], [enable Websockets Demo vad package])
+AC_HELP_STRING([--disable-websockets-vad], [disable Websockets Demo vad package (default)])dnl
+], [
+     case "${enableval}" in
+       yes)	with_websockets_vad="yes";;
+       no)	with_websockets_vad="no";;
+       *)	AC_MSG_ERROR(bad value ${enableval} for --enable-websockets-vad) ;;
+     esac
+  ],
+  [ with_websockets_vad="no" ]
+)
+
+
 
 AC_ARG_ENABLE(all-vads, [dnl
 AC_HELP_STRING([--disable-all-vads], [disable building all vad packages])dnl
@@ -2915,6 +2971,7 @@ then
     with_sparqldemo_vad="$with_all_vad"
     with_syncml_vad="$with_all_vad"
     with_tutorial_vad="$with_all_vad"
+    with_websockets_vad="$with_all_vad"
 fi
 
 AM_CONDITIONAL(WITH_BPEL_VAD, test "x$with_bpel_vad" = "xyes")
@@ -2929,6 +2986,7 @@ AM_CONDITIONAL(WITH_RDFMAPPERS_VAD, test "x$with_rdfmappers_vad" = "xyes")
 AM_CONDITIONAL(WITH_SPARQLDEMO_VAD, test "x$with_sparqldemo_vad" = "xyes")
 AM_CONDITIONAL(WITH_SYNCML_VAD, test "x$with_syncml_vad" = "xyes")
 AM_CONDITIONAL(WITH_TUTORIAL_VAD, test "x$with_tutorial_vad" = "xyes")
+AM_CONDITIONAL(WITH_WEBSOCKETS_VAD, test "x$with_websockets_vad" = "xyes")
 
 
 
@@ -3152,6 +3210,7 @@ AC_CONFIG_FILES([
 	binsrc/dbpedia/Makefile
 	binsrc/driver/Makefile
 	binsrc/fct/Makefile
+	binsrc/graphql/Makefile
 	binsrc/hibernate/Makefile
 	binsrc/hosting/Makefile
 	binsrc/hosting/mono/Makefile
@@ -3167,12 +3226,16 @@ AC_CONFIG_FILES([
 	binsrc/jena/Makefile
 	binsrc/jena2/Makefile
 	binsrc/jena3/Makefile
+	binsrc/jena4/Makefile
+	binsrc/jena5/Makefile
 	binsrc/maildrop/Makefile
 	binsrc/mono/Makefile
 	binsrc/oat/Makefile
 	binsrc/rdf_mappers/Makefile
 	binsrc/rdb2rdf/Makefile
 	binsrc/rdf4j/Makefile
+	binsrc/rdf4j_4/Makefile
+	binsrc/rdf4j_5/Makefile
 	binsrc/redland/Makefile
 	binsrc/samples/demo/Makefile
 	binsrc/samples/hslookup/Makefile
@@ -3216,6 +3279,7 @@ AC_CONFIG_FILES([
 	binsrc/virtuoso_sink/Makefile
 	binsrc/vsp/Makefile
 	binsrc/vspx/Makefile
+	binsrc/websocket/Makefile
 	binsrc/ws/Makefile
 	binsrc/ws/wsrm/Makefile
 	binsrc/xddl/Makefile

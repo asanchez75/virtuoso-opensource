@@ -9,7 +9,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #  
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #  
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -61,7 +61,7 @@ STICKER_FS="doc_vad_filesystem.xml"
 VAD_NAME="doc"
 VAD_NAME_DEVEL="$VAD_NAME"_filesystem.vad
 VAD_NAME_RELEASE="$VAD_NAME"_dav.vad
-VERSION="1.1.19"
+VERSION="1.1.20"
 PACKDATE=`date +"%Y-%m-%d %H:%M"`
 
 HOST_OS=`uname -s | grep WIN`
@@ -388,7 +388,7 @@ sticker_init() {
   echo "  <name package=\"doc\">" >> $STICKER
   echo "    <prop name=\"Title\" value=\"Virtuoso Documentation\"/>" >> $STICKER
   echo "    <prop name=\"Developer\" value=\"OpenLink Software\"/>" >> $STICKER
-  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2021 OpenLink Software\"/>" >> $STICKER
+  echo "    <prop name=\"Copyright\" value=\"(C) 1998-2025 OpenLink Software\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.com/virtuoso\"/>" >> $STICKER
   echo "    <prop name=\"Download\" value=\"http://www.openlinksw.co.uk/virtuoso\"/>" >> $STICKER
   echo "  </name>" >> $STICKER
@@ -463,9 +463,11 @@ sticker_init() {
   for file in `find vad -type f -print | LC_ALL=C sort`
   do
     name=`echo "$file" | cut -b10-`
-    perms='110100100NN'
-    echo "$name" | egrep -e '.vspx$' > /dev/null && perms='111101101NN'
-    echo "$name" | egrep -e '.vsp$' > /dev/null && perms='111101101NN'
+    case "$name" in
+        *.sql)  		perms='110100000NN' ;;
+	*.vsp|*.vspx|*.php)	perms='111101101NN' ;;
+        *)			perms='110100100NN' ;;
+    esac
     
     echo "  <file type=\"$TYPE\" overwrite=\"yes\" source=\"data\" target_uri=\"$name\" dav_owner=\"dav\" dav_grp=\"administrators\" dav_perm=\"$perms\" makepath=\"yes\"/>" >> $STICKER
   done

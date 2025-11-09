@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -562,7 +562,7 @@ itc_free (it_cursor_t * it)
 
 
 placeholder_t *
-plh_allocate ()
+plh_allocate (void)
 {
   NEW_PLH(v);
   return v;
@@ -771,13 +771,14 @@ itc_like_compare (it_cursor_t * itc, buffer_desc_t * buf, caddr_t pattern, searc
 
   if (dtp2 != DV_SHORT_STRING && dtp2 != DV_LONG_STRING && dtp2 != DV_WIDE && dtp2 != DV_LONG_WIDE )
     return DVC_LESS;
-    switch (dtp2)
+
+  switch (dtp2)
       {
       case DV_WIDE:
       case DV_LONG_WIDE:
       pt = LIKE_ARG_WCHAR;
       break;
-	  }
+  }
   switch (dtp1)
 	      {
     case DV_SHORT_STRING:
@@ -1231,10 +1232,10 @@ itc_row_check (it_cursor_t * itc, buffer_desc_t * buf)
 	  qi->qi_set = itc->itc_set;
 	}
       if (ks->ks_local_test
-	  && !code_vec_run_no_catch (ks->ks_local_test, itc))
+	  && !code_vec_run_no_catch (ks->ks_local_test, itc, 0))
 	return DVC_LESS;
       if (ks->ks_local_code)
-	code_vec_run_no_catch (ks->ks_local_code, itc);
+	code_vec_run_no_catch (ks->ks_local_code, itc, 0);
       if (ks->ks_setp)
 	{
 	  KEY_TOUCH (ks->ks_key);
@@ -3044,7 +3045,7 @@ int32 em_ra_startup_threshold = 0;
 
 
 int
-em_trigger_ra (extent_map_t * em, dp_addr_t ext_dp, uint32 now, int window, int threshold)
+em_trigger_ra (extent_map_t * em, dp_addr_t ext_dp, time_msec_t now, int window, int threshold)
 {
   ptrlong rh;
   if (main_bufs < 10000)
@@ -3115,8 +3116,8 @@ em_ext_ra_pages (extent_map_t * em, it_cursor_t * itc, dp_addr_t ext_dp, dp_addr
 	  if (0 == (ext->ext_pages[inx] & (1 << b_idx)))
 	    ;
 	  else if (gethash (DP_ADDR2VOID(other_dp), em->em_uninitialized))
-#ifdef DEBUG
-	    bing  ()
+#if 0
+	    bing()
 #endif
 		;
 	  else
@@ -3149,7 +3150,7 @@ itc_read_aside (it_cursor_t * itc, buffer_desc_t * buf, dp_addr_t dp)
   int fill = 0;
   dp_addr_t leaves[EXTENT_SZ];
   dp_addr_t ext_dp = EXT_ROUND (dp);
-  uint32 now;
+  time_msec_t now;
   ra_req_t *ra=NULL;
   if (disk_reads + tc_new_page < main_bufs)
     {
@@ -3184,7 +3185,8 @@ void
 dbs_timeout_read_history (dbe_storage_t * dbs)
 {
   int window = disk_reads < main_bufs ? em_ra_startup_window : em_ra_window;
-  int now = approx_msec_real_time (), inx, nth;
+  time_msec_t now = approx_msec_real_time ();
+  int inx, nth;
   if (wi_inst.wi_checkpoint_atomic)
     return;
   for (nth = 0; 1; nth++)
@@ -3380,7 +3382,7 @@ itc_col_stat_free (it_cursor_t * itc, int upd_col, float est)
       if (upd_col && (0 == stricmp (col->col_name, "P") || 0 == stricmp (col->col_name, "G")))
         {
           if (NULL != col->col_stat)
-            srv_add_background_task (col_stat_free, col->col_stat);
+            srv_add_background_task ((srv_background_task_t)col_stat_free, col->col_stat);
           col->col_stat = cs;
           is_int = 0;
         }
@@ -3446,7 +3448,7 @@ cs_new_page (dk_hash_t * cols)
       int64 * place;
       caddr_t * p_value;
       id_hash_iterator (&hit, cs->cs_distinct);
-      while (hit_next (&hit, &p_value, (caddr_t*)&place))
+      while (hit_next (&hit, (caddr_t *) &p_value, (caddr_t*)&place))
 	{
 	  *place &= ~CS_IN_SAMPLE; 
 	}
@@ -3842,7 +3844,9 @@ itc_matches_on_page (it_cursor_t * itc, buffer_desc_t * buf, int * leaf_ctr_ret,
 	      was_left_leaf = have_left_leaf = 1;
 	      leaves[leaf_fill++] = LONG_REF (row + LD_LEAF);
 	      leaf_ctr++;
+#if 0
 	      if (leaf_fill > 1000) bing ();
+#endif
 	    }
 	}
       else
@@ -3868,7 +3872,9 @@ itc_matches_on_page (it_cursor_t * itc, buffer_desc_t * buf, int * leaf_ctr_ret,
 	    {
 	      dp_addr_t leaf1 = LONG_REF (row + itc->itc_insert_key->key_key_leaf[IE_ROW_VERSION (row)]);
 	      leaves[leaf_fill++] = leaf1;
+#if 0
 	      if (leaf_fill > 1000) bing ();
+#endif
 	      if (have_left_leaf)
 		{
 		  /* prefer giving the next to leftmost instead of leftmost leaf if leftmost is left dummy.
@@ -3934,10 +3940,12 @@ itc_matches_on_page (it_cursor_t * itc, buffer_desc_t * buf, int * leaf_ctr_ret,
     }
       else
     itc->itc_map_pos = save_pos;
+#if 0
   if (itc->itc_map_pos >= buf->bd_content_map->pm_count)
     {
       bing ();
     }
+#endif
   if (is_col)
     itc->itc_st.n_rows_sampled = itc->itc_st.rows_in_segs;
   else

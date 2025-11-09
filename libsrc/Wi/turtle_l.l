@@ -4,7 +4,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -245,7 +245,7 @@ ttlyyfree (void * ptr , yyscan_t yyscanner)
 %x UNREACHEABLE
 
 INTEGER_LITERAL ([0-9]+)
-DECIMAL_LITERAL (([0-9]+"."[0-9]*)|("."[0-9]+))
+DECIMAL_LITERAL (([0-9]+"."[0-9]+))
 DOUBLE_LITERAL	(({INTEGER_LITERAL}|{DECIMAL_LITERAL})[eE][+-]?[0-9]+)
 
 TTL_CR_IRIREF	([^\x00-\x20<>\\""{}|^`]|{TTL_CR_UCHAR})
@@ -347,6 +347,16 @@ SPAR_NCNAME_X		(([A-Za-z0-9_./#%+?&=@*:\x7f-\xfe-]*[A-Za-z0-9_/#%+?&=@*:\x7f-\xf
 <GARBAGE_BOL>"["		{ TTLYYBEGIN(INITIAL);	ttlp_arg[0].ttlp_lexdepth++;	return _LSQBRA; }
 <INITIAL,GARBAGE_BOL,GARBAGE,TWO_CRS>"[]"	{ TTLYYBEGIN(INITIAL);					return _LSQBRA_RSQBRA; }
 <INITIAL>"]"			{			ttlp_arg[0].ttlp_lexdepth--;	return _RSQBRA; }
+<INITIAL>[Gg][Rr][Aa][Pp][Hh]   {
+    int depth = ttlp_arg[0].ttlp_lexdepth;
+    if (!((0 == depth) && (ttlp_arg[0].ttlp_flags & TTLP_ALLOW_TRIG))) /* skip GRAPH decoration for TriG */
+      {
+        if ((TTLP_SNIFFER & ttlp_arg[0].ttlp_flags) && ((NULL == ttlp_arg[0].ttlp_base_uri) || ('\0' == ttlp_arg[0].ttlp_base_uri[0])))
+          TTLYYBEGIN (GARBAGE);
+        else
+          TTL_TOKBOX_Q(0,QNAME,"name without prefix");
+      }
+  }
 <INITIAL>"{"			{
     int depth = ttlp_arg[0].ttlp_lexdepth++;
     return (((0 == depth) && (ttlp_arg[0].ttlp_flags & TTLP_ALLOW_TRIG)) ? _LBRA_TOP_TRIG : _LBRA);
@@ -354,7 +364,7 @@ SPAR_NCNAME_X		(([A-Za-z0-9_./#%+?&=@*:\x7f-\xfe-]*[A-Za-z0-9_/#%+?&=@*:\x7f-\xf
 <GARBAGE_BOL>"{"		{ TTLYYBEGIN(INITIAL);	ttlp_arg[0].ttlp_lexdepth++;	return _LBRA; }
 <INITIAL>"}"			{			ttlp_arg[0].ttlp_lexdepth--;	return _RBRA; }
 
-<INITIAL,GARBAGE_BOL,GARBAGE,TWO_CRS>"<"([^\\>\001-\040])*">"	{
+<INITIAL,GARBAGE_BOL,GARBAGE,TWO_CRS>"<"([^\\<>\001-\040])*">"	{
     if (TTL_MAX_IRI_LEN <= yyleng)
       TTLYYERROR_OR_RECOVER("The \"relative IRI\" (angle-bracketed) notation is too long");
     TTLYYBEGIN(INITIAL);
@@ -370,14 +380,14 @@ SPAR_NCNAME_X		(([A-Za-z0-9_./#%+?&=@*:\x7f-\xfe-]*[A-Za-z0-9_/#%+?&=@*:\x7f-\xf
     return Q_IRI_REF;
   }
 
-<INITIAL>"<"(([^\\>\001-\040])|{SPAR_ECHAR}|"\\>")*">"	{
+<INITIAL>"<"(([^\\<>\001-\040])|{SPAR_ECHAR}|"\\>")*">"	{
     if (TTL_MAX_IRI_LEN <= yyleng)
       TTLYYERROR_OR_RECOVER("The \"relative IRI\" (angle-bracketed) notation is too long");
     ttlyylval.box = ttlp_strliteral (ttlp_arg, yytext, TTLP_STRLITERAL_LTGT, '>');
     return Q_IRI_REF;
   }
 
-<INITIAL>"<"([^<>\001-\037]|"\t")*">"	{
+<INITIAL>"<"([^>\001-\037]|"\t")*">"	{
     if (!(ttlp_arg[0].ttlp_flags & TTLP_ACCEPT_DIRTY_NAMES))
       TTLYYERROR_OR_RECOVER ("Invalid characters in angle-bracketed name; this error can be suppressed by parser flags");
     if (TTL_MAX_IRI_LEN <= yyleng)
@@ -565,6 +575,7 @@ SPAR_NCNAME_X		(([A-Za-z0-9_./#%+?&=@*:\x7f-\xfe-]*[A-Za-z0-9_/#%+?&=@*:\x7f-\xf
 <TURTLE_DQ,TURTLE_BAD_DQ><<EOF>>		{ ttlp_arg[0].ttlp_flags |= TTLP_SNIFFER_COMPLETE; ttlyyerror ("Unterminated short double-quoted string"); }
 
 <INITIAL>[+-]?{INTEGER_LITERAL}		{ return ttlp_NUMBER_int (yylval, ttlp_arg, yyg); }
+<INITIAL>[+-]?{INTEGER_LITERAL}"."([ \t]*)[,;.]		{ int num_len = strchr (yytext, '.') + 1 - yytext; int res = ttlp_NUMBER_int (yylval, ttlp_arg, yyg); yyless (num_len); return res; }
 <INITIAL>[+-]?{DECIMAL_LITERAL}		{ return ttlp_NUMBER_decimal (yylval, ttlp_arg, yyg); }
 <INITIAL>[+-]?{DOUBLE_LITERAL}		{ return ttlp_NUMBER_double (yylval, ttlp_arg, yyg); }
 
@@ -786,7 +797,7 @@ resume_sniffing:
   QR_RESET_CODE
     {
       du_thread_t *self = THREAD_CURRENT_THREAD;
-      caddr_t *err = (caddr_t *)thr_get_error_code (self);
+      caddr_t err = thr_get_error_code (self);
 #ifdef TTLYYDEBUG
       ttlyy_dbg_printf (("{ERROR %s %s}", ERR_STATE(err), ERR_MESSAGE(err)));
 #endif

@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -457,7 +457,9 @@ ParseOptions (CfgData cfgdata[], TCHAR * s, int clean_up)
 	  _tcsncpy (cfgdata[i].data, valueW, attrs[i].maxLength);
 	  cfgdata[i].data[attrs[i].maxLength] = 0;
 	  if (valueW != attrs[i].defVal)
-	    free_wide_buffer (valueW);
+	    {
+	      free_wide_buffer (valueW);
+	    }
 # endif
 #else
 	  _tcsncpy (cfgdata[i].data, _T (""), attrs[i].maxLength);
@@ -1026,6 +1028,8 @@ SQLDriverConnect (SQLHDBC hdbc,
     SQLSMALLINT * pcbConnStrOutMax,
     SQLUSMALLINT fDriverCompletion)
 {
+  ASSERT_HANDLE_TYPE (hdbc, SQL_HANDLE_DBC);
+
   return virtodbc__SQLDriverConnect (hdbc, hwnd, szConnStrIn, cbConnStrIn, szConnStrOut, cbConnStrOutMax, pcbConnStrOutMax, fDriverCompletion);
 }
 
@@ -1036,7 +1040,8 @@ SQLConnect (SQLHDBC hdbc,
 {
 #ifndef DSN_TRANSLATION
 
-  return internal_sql_connect (hdbc, szDSN, cbDSN, szUID, cbUID, szPWD, cbPWD);
+  ASSERT_HANDLE_TYPE (hdbc, SQL_HANDLE_DBC);
+  return internal_sql_connect (hdbc, (SQLCHAR *) szDSN, cbDSN, (SQLCHAR *) szUID, cbUID, (SQLCHAR *) szPWD, cbPWD);
 
 #else
   CON (con, hdbc);
@@ -1046,8 +1051,10 @@ SQLConnect (SQLHDBC hdbc,
   TCHAR *pwd;
   TCHAR *pcmd = &(cmd[0]);
 
+  ASSERT_HANDLE_TYPE (hdbc, SQL_HANDLE_DBC);
+
 #ifdef UNICODE
-  if (sizeof(TCHAR) == 4)
+  if (sizeof(TCHAR) == 4 && (cbDSN > 0 || cbDSN == SQL_NTS))
     {
       int wsize = 4;
       char *ch;
@@ -1061,7 +1068,7 @@ SQLConnect (SQLHDBC hdbc,
       if (ch && ch[0]!=0 && ch[1]==0 && ch[2]!=0)
         wsize = 2;
 #endif
-      if (wsize == 4)
+      if (wsize == 4 && (cbUID > 0 || cbUID == SQL_NTS))
         {
           // try recheck charset in szUID string
           ch = (char *) szUID;

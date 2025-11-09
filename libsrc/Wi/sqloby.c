@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -56,7 +56,7 @@ sqlo_oby_exp_cols (sqlo_t * so, ST * dt, ST** oby)
       if (INTEGERP (spec->_.o_spec.col))
 	{
 	  ptrlong nth = unbox ((box_t) spec->_.o_spec.col) - 1;
-	  if ((uint32)nth >= (ptrlong) BOX_ELEMENTS (dt->_.select_stmt.selection))
+	  if ((uint32)nth >= (ptrlong) BOX_ELEMENTS (dt->_.select_stmt.selection) || nth < 0)
 	    sqlc_error (so->so_sc->sc_cc, "37000", "index of column in order by out of range");
 	  spec->_.o_spec.col = (ST*) t_box_copy_tree (dt->_.select_stmt.selection[nth]);
 	  while (ST_P (spec->_.o_spec.col, BOP_AS))
@@ -183,6 +183,8 @@ sqlo_ot_oby_seq (sqlo_t * so, op_table_t * top_ot)
 	/* there's order cols from same table non-contiguous in ordering */
 	return;
       }
+      if (col_ot->ot_is_left) /* sort col from left branch, hash would put right match at top? */
+        return;
       if (col_ot != prev_ot)
 	{
 	  prev_ot = col_ot;
@@ -210,7 +212,7 @@ sqlo_is_seq_in_oby_order (sqlo_t * so, df_elt_t * dfe, df_elt_t * last_tb)
   op_table_t * from_ot = so->so_this_dt;
   int n_ordered = from_ot ? dk_set_length (from_ot->ot_oby_ots) : -1;
   int n_in_order = 0;
-  for (dfe = dfe; dfe; dfe = dfe->dfe_next)
+  for (; dfe; dfe = dfe->dfe_next)
     {
       if (dfe == last_tb)
 	return 1;
@@ -739,6 +741,8 @@ sqlo_fun_ref_epilogue (sqlo_t * so, op_table_t * from_ot)
       int inx;
       all_cols_p = sqlo_oby_exp_cols (so, from_ot->ot_dt, group);
       sqlo_place_oby_specs (so, from_ot, group);
+      if (!texp->_.table_exp.group_by_full)
+        sqlc_error (so->so_sc->sc_cc, "37000", "Statement not allowed");
       _DO_BOX (inx, texp->_.table_exp.group_by_full)
 	{
 	  sqlo_place_oby_specs (so, from_ot, texp->_.table_exp.group_by_full[inx]);
@@ -794,7 +798,13 @@ sqlo_fun_ref_epilogue (sqlo_t * so, op_table_t * from_ot)
 		sqlo_place_exp (so, from_ot->ot_work_dfe, arg_dfe);
 	    }
 	  else
-	    sqlo_place_exp (so, from_ot->ot_work_dfe, arg_dfe);
+            {
+              char prev = so->so_place_code_forr_cond;
+              if (DFE_VALUE_SUBQ == from_ot->ot_work_dfe->dfe_type && !group) /* simple fref */
+                so->so_place_code_forr_cond = 0;
+              sqlo_place_exp (so, from_ot->ot_work_dfe, arg_dfe);
+              so->so_place_code_forr_cond = prev;
+            }
 	  if (fref->_.fn_ref.fn_code == AMMSC_COUNT || fref->_.fn_ref.fn_code == AMMSC_COUNTSUM)
 	    fref_dfe->dfe_sqt.sqt_dtp = DV_LONG_INT;
 	  else
@@ -807,9 +817,11 @@ sqlo_fun_ref_epilogue (sqlo_t * so, op_table_t * from_ot)
       if (locus_to_loclocal)
 	{
 	  fref_dfe->dfe_locus = LOC_LOCAL;
-	  group_dfe->dfe_locus = LOC_LOCAL;
+          if (NULL != group_dfe)
+            group_dfe->dfe_locus = LOC_LOCAL;
 	}
-      t_set_push (&group_dfe->_.setp.fun_refs, fref);
+      if (NULL != group_dfe)
+        t_set_push (&group_dfe->_.setp.fun_refs, fref);
     }
   END_DO_SET();
   if (group_dfe)
@@ -857,7 +869,8 @@ int
 sqlo_is_postprocess (sqlo_t *so, df_elt_t * dt_dfe, df_elt_t * last_tb_dfe)
 {
   op_table_t *ot = dfe_ot (dt_dfe);
-
+  if (!ot)
+    sqlc_new_error (so->so_sc->sc_cc, "37000", "SQ489", "Expression is not allowed");
   if (ot->ot_group_dfe)
     return 1;
   if (!ot->ot_oby_dfe)

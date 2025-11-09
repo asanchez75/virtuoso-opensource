@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --  
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --  
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -86,7 +86,7 @@ create procedure "VAD"."DBA"."HTML_FOOTER_OUT" ( in arr any )
   http ('<TR CLASS="CopyrightBorder"><TD COLSPAN="2"><IMG SRC="/admin/images/1x1.gif" WIDTH="1" HEIGHT="2" ALT=""></TD></TR>');
   http ('<TR><TD ALIGN="right" COLSPAN="2"><P CLASS="Copyright">Virtuoso Server ');
   http (sys_stat('st_dbms_ver'));
-  http (sprintf (' VAD Interface (%s) - Copyright&copy; 1998-2021 OpenLink Software.</P></TD></TR>',"VAD"."DBA"."VAD_VERSION" ()));
+  http (sprintf (' VAD Interface (%s) - Copyright&copy; 1998-2025 OpenLink Software.</P></TD></TR>',"VAD"."DBA"."VAD_VERSION" ()));
   http ('</TABLE>\n</BODY>');
 }
 ;
@@ -972,7 +972,7 @@ create procedure "VAD"."DBA"."VAD_LIST" (in dir varchar := null, in fs_type int 
   nlist := vector ();
   vaddir := dir;
   if (vaddir is null and fs_type = 0)
-    vaddir := cfg_item_value (virtuoso_ini_path (), 'Parameters', 'VADInstallDir');
+    vaddir := virtuoso_ini_item_value ('Parameters', 'VADInstallDir');
 
   if (vaddir is null)
     return;
@@ -1155,7 +1155,7 @@ create procedure "VAD"."DBA"."VAD_RESOLVE_DEPENDENCY_TREE" (
 
   if (vadDir is null)
   {
-    vadDir := cfg_item_value (virtuoso_ini_path (), 'Parameters', 'VADInstallDir');
+    vadDir := virtuoso_ini_item_value ('Parameters', 'VADInstallDir');
   }
   vadDir := rtrim (vadDir, '/') || '/';
 

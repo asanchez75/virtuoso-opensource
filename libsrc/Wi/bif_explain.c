@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -207,6 +207,7 @@ ssl_type (state_slot_t * ssl, char * str)
     case DV_DATETIME: str[0] = 't';  break;
     case DV_STRING: str[0] = 's'; break;
     case DV_ANY: str[0] = 'a'; break;
+    case DV_NUMERIC: str[0] = 'u'; break;
     case DV_WIDE: case DV_LONG_WIDE:
       str[0] = 'N'; break;
     default: str[0] = 'x';
@@ -227,8 +228,8 @@ dv_iri_short_name (caddr_t x)
     return NULL;
   if (iri_split (name, &pref, &local))
     {
-      int len = box_length (local) - 4 /* Remember that 4 bytes of \c local is placeholder for encoding namespace prefix */ ;
-      char *pure_local = local + 4;	/* that 4 bytes, yeah */
+      int len = box_length (local) - RPID_SZ;	/* Remember that 8 or 4 bytes of \c local is placeholder for encoding namespace prefix */
+      char *pure_local = local + RPID_SZ;	/* that 8 or 4 bytes, yeah */
       int inx = len - 2;
       int best_inx = 0;
       caddr_t r;
@@ -587,17 +588,17 @@ artm_print:
 	    stmt_printf (("declare handler end at %d", in->_.handler.label));
 	  else
 	    stmt_printf (("declare DEFAULT handler "));
-	    {
-	      int inx;
-	      DO_BOX (caddr_t *, state, inx, in->_.handler.states)
-		{
-		  if (IS_BOX_POINTER (state))
-		    stmt_printf ((" state %s, ", state[0]));
-		  else
-		    stmt_printf ((" NO DATA_FOUND, "));
-		}
-	      END_DO_BOX;
-	    }
+	  {
+	    int inx;
+	    DO_BOX (caddr_t *, state, inx, in->_.handler.states)
+	      {
+		if (IS_BOX_POINTER (state))
+		  stmt_printf ((" state %s, ", state[0]));
+		else
+		  stmt_printf ((" NO DATA_FOUND, "));
+	      }
+	    END_DO_BOX;
+	  }
 	  break;
 
 	case INS_HANDLER_END:
@@ -1167,6 +1168,19 @@ qn_print_reuse (data_source_t * qn)
 
 	  inx += reuse[inx + 1] + 2;
 	}
+    }
+}
+
+const char *
+tn_direction_string(int dir)
+{
+  switch (dir)
+    {
+      case TRANS_ANY: return "any";
+      case TRANS_LR: return "LR";
+      case TRANS_RL: return "RL";
+      case TRANS_LRRL: return "LRRL";
+      default: return "???";
     }
 }
 
@@ -1755,10 +1769,13 @@ node_print (data_source_t * node)
   if (node->src_sets)
     {
       if (dbf_explain_level > 2)
-	stmt_printf (("s# %d %d ", node->src_sets, node->src_in_state));
+	stmt_printf (("Set# %d i#%d ", node->src_sets, node->src_in_state));
       else
-    stmt_printf (("s# %d ", node->src_sets));
+	stmt_printf (("Set# %d ", node->src_sets));
     }
+  else if (dbf_explain_level > 2)
+    stmt_printf (("i#%d ", node->src_in_state));
+
   if (in == (qn_input_fn) table_source_input ||
       in == (qn_input_fn) table_source_input_unique)
     {
@@ -2242,14 +2259,14 @@ node_print (data_source_t * node)
 	  stmt_printf  ((" %s\n", tn->tn_lowest_sas ? "min same-as id" : ""));
 	  if (tn->tn_sas_g)
 	    {
-	      stmt_printf (("g = "));
+              stmt_printf (("G = "));
 	      ssl_array_print (tn->tn_sas_g);
 	      stmt_printf (("\n"));
 	    }
 	}
       else
 	{
-	  stmt_printf (("Transitive dt dir %d, input: ", tn->tn_direction));
+          stmt_printf (("Transitive DT dir %s(%d), input: ", tn_direction_string(tn->tn_direction), tn->tn_direction));
 	  ssl_array_print (tn->tn_input);
 	  stmt_printf (("\n  input shadow: "));
 	  ssl_array_print (tn->tn_input_ref);
@@ -2310,14 +2327,14 @@ node_print (data_source_t * node)
 	  stmt_printf (("\n shadow: "));
 	  ssl_array_print (ose->ose_out_shadow);
 	}
-      stmt_printf (("\n"));
+      stmt_printf (("\n} /* end of outer */\n"));
     }
   else if (in == (qn_input_fn) set_ctr_input)
     {
       QNCAST (set_ctr_node_t, sctr, node);
-      stmt_printf (("cluster outer seq start, set no "));
+      stmt_printf (("Outer seq start, set no "));
       ssl_print (sctr->sctr_set_no);
-      stmt_printf (("    \nsave ctx:"));
+      stmt_printf ((" {    \nsave ctx:"));
       ssl_array_print (sctr->clb.clb_save);
       if (sctr->sctr_hash_spec)
 	{
@@ -4304,7 +4321,7 @@ qi_log_stats_1 (query_instance_t * qi, caddr_t err, caddr_t ext_text)
   client_connection_t * cli = qi->qi_client;
   dk_session_t * ses;
   uint64 rt;
-  uint32 now;
+  time_usec_t now;
   /* milos: allocate memory for the comment structure */
   qr_comment_t comm;
 
@@ -4315,7 +4332,7 @@ qi_log_stats_1 (query_instance_t * qi, caddr_t err, caddr_t ext_text)
   if (!qi->qi_log_stats)
     return;
 
-  now = get_msec_real_time ();
+  now = get_usec_real_time ();
   CLI_THREAD_TIME (cli);
   rt = rdtsc ();
   if (!(ses = cli->cli_ql_strses))
@@ -4327,7 +4344,7 @@ qi_log_stats_1 (query_instance_t * qi, caddr_t err, caddr_t ext_text)
   session_buffered_write_char (DV_DATETIME, ses);
   session_buffered_write (ses, (char*)cli->cli_start_dt, DT_LENGTH);
   /*1*/
-  print_int (now - cli->cli_start_time, ses);
+  print_int ((boxint) ((now - cli->cli_start_time_usec) / 1000UL), ses); /* value in msec */
   /*2*/
   print_int (cli->cli_run_clocks, ses);
   /*3*/
@@ -4441,7 +4458,9 @@ qi_log_stats_1 (query_instance_t * qi, caddr_t err, caddr_t ext_text)
   /*40*/
   if (!ext_text)
     {
+      PROC_SAVE_VARS;
       qr_comment_t * comm;
+      PROC_SAVE_PARENT;
       cli->cli_resultset_max_rows = -1;
       cli->cli_resultset_comp_ptr = (caddr_t *) &rs_comp;
       cli->cli_resultset_data_ptr = &res;
@@ -4456,6 +4475,7 @@ qi_log_stats_1 (query_instance_t * qi, caddr_t err, caddr_t ext_text)
 	}
       END_QR_RESET;
       trset_end ();
+      PROC_RESTORE_SAVED;
       SET_THR_ATTR (self, TA_STAT_INST, NULL);
 	  res = dk_set_nreverse (res);
 	  /* milos: Get the list of warnings from the TA_STAT_COMM and print it */

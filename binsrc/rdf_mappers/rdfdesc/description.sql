@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -698,7 +698,7 @@ DB.DBA.RDF_VIEW_GET_BINARY (in path varchar, in accept varchar) __SOAP_HTTP 'app
   declare host, suff, qr varchar;
   declare arr, stat, msg, meta, data any;
 
-  host := cfg_item_value(virtuoso_ini_path(), 'URIQA','DefaultHost');
+  host := virtuoso_ini_item_value ('URIQA','DefaultHost');
   arr := split_and_decode (path, 0, '\0\0/');
   suff := arr[1];
   qr := sprintf ('sparql prefix aowl: <http://bblfish.net/work/atom-owl/2006-06-06/>'||

@@ -7,7 +7,7 @@
  -  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  -  project.
  -  
- -  Copyright (C) 1998-2021 OpenLink Software
+ -  Copyright (C) 1998-2025 OpenLink Software
  -  
  -  This project is free software; you can redistribute it and/or modify it
  -  under the terms of the GNU General Public License as published by the
@@ -148,7 +148,7 @@
                       <tr class="subpage_header_area">
                         <xsl:apply-templates select="vm:header"/>
                         <xsl:apply-templates select="vm:rawheader"/>
-                        &lt;?vsp if (atoi (cfg_item_value (virtuoso_ini_path(), 'HTTPServer', 'ServerThreads')) &lt; 2) { ?&gt;
+                        &lt;?vsp if (atoi (virtuoso_ini_item_value ('HTTPServer', 'ServerThreads')) &lt; 2) { ?&gt;
                           <td><font color="Red">
                         &lt;?vsp http_value('Warning: Only 1 thread allocated for web services.  The BPEL user interface will not be operational'); ?&gt;
                           </font></td>

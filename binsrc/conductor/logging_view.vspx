@@ -4,7 +4,7 @@
  -  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  -  project.
  -
- -  Copyright (C) 1998-2021 OpenLink Software
+ -  Copyright (C) 1998-2025 OpenLink Software
  -
  -  This project is free software; you can redistribute it and/or modify it
  -  under the terms of the GNU General Public License as published by the
@@ -37,7 +37,7 @@
         declare v_params any;
 
         v_params := control.vc_page.vc_event.ve_params;
-        self.log_file := cfg_item_value(virtuoso_ini_path(), 'Database', 'ErrorLogFile');
+        self.log_file := virtuoso_ini_item_value ('Database', 'ErrorLogFile');
         self.dday := sprintf ('%02d', dayofmonth (now()));
         self.dmon := sprintf ('%03.03s', monthname (now()));
         self.dyear := sprintf ('%04d', year (now()));

@@ -2,7 +2,7 @@
 #  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 #  project.
 #
-#  Copyright (C) 1998-2021 OpenLink Software
+#  Copyright (C) 1998-2025 OpenLink Software
 #
 #  This project is free software; you can redistribute it and/or modify it
 #  under the terms of the GNU General Public License as published by the
@@ -45,7 +45,7 @@ endif
 
 JDK_TESTS = $(JDK4_TEST) $(JDK4_1_TEST) $(JDK4_2_TEST) $(JDK4_3_TEST)
 
-SUBDIRS	= . testsuite_4.0
+SUBDIRS	= . virtuoso testsuite_4.0
 
 
 all-am: $(JDK4_TARGETS) $(JDK4_1_TARGETS) $(JDK4_2_TARGETS) $(JDK4_3_TARGETS)

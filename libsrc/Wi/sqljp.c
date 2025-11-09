@@ -8,7 +8,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -47,9 +47,9 @@ dfe_left_col (df_elt_t * tb_dfe, df_elt_t * pred)
   in_list = sqlo_in_list (pred, tb_dfe, NULL);
   if (in_list && dfe_tables (pred) && !pred->dfe_tables->next)
     return in_list[0];
-  if ( DFE_COLUMN == pred->_.bin.left->dfe_type && (op_table_t *)pred->_.bin.left->dfe_tables && tb_dfe->_.table.ot == (op_table_t *)pred->_.bin.left->dfe_tables->data)
+  if (!DFE_SHORTCUT(pred->_.bin.left) && DFE_COLUMN == pred->_.bin.left->dfe_type && (op_table_t *)pred->_.bin.left->dfe_tables && tb_dfe->_.table.ot == (op_table_t *)pred->_.bin.left->dfe_tables->data)
     return pred->_.bin.left;
-  if (DFE_COLUMN == pred->_.bin.right->dfe_type && (op_table_t *)pred->_.bin.right->dfe_tables && tb_dfe->_.table.ot == (op_table_t *)pred->_.bin.right->dfe_tables->data)
+  if (!DFE_SHORTCUT(pred->_.bin.right) && DFE_COLUMN == pred->_.bin.right->dfe_type && (op_table_t *)pred->_.bin.right->dfe_tables && tb_dfe->_.table.ot == (op_table_t *)pred->_.bin.right->dfe_tables->data)
     return pred->_.bin.right;
   return NULL;
 }
@@ -67,9 +67,9 @@ dfe_right (df_elt_t * tb_dfe, df_elt_t * pred)
 	return in_list[1];
       return NULL;
     }
-  if (!dk_set_member (pred->_.bin.left->dfe_tables, (void *) tb_dfe->_.table.ot))
+  if (!DFE_SHORTCUT(pred->_.bin.left) && !dk_set_member (pred->_.bin.left->dfe_tables, (void *) tb_dfe->_.table.ot))
     return pred->_.bin.left;
-  if (!dk_set_member (pred->_.bin.right->dfe_tables, (void *) tb_dfe->_.table.ot))
+  if (!DFE_SHORTCUT(pred->_.bin.right) && !dk_set_member (pred->_.bin.right->dfe_tables, (void *) tb_dfe->_.table.ot))
     return pred->_.bin.right;
   return NULL;
 }
@@ -215,12 +215,18 @@ int
 dfe_is_iri_id_test (df_elt_t * pred)
 {
   df_elt_t *rhs;
+  if ((DFE_TRUE == pred) || (DFE_FALSE == pred))
+    return 0;
   if (DFE_BOP != pred->dfe_type || BOP_NOT != pred->_.bin.op)
     return 0;
   pred = pred->_.bin.left;
+  if ((DFE_TRUE == pred) || (DFE_FALSE == pred))
+    return 0;
   if (DFE_BOP_PRED != pred->dfe_type || BOP_EQ != pred->_.bin.op || 0 != unbox ((ccaddr_t) pred->_.bin.left->dfe_tree))
     return 0;
   rhs = pred->_.bin.right;
+  if ((DFE_TRUE == rhs) || (DFE_FALSE == rhs))
+    return 0;
   if (st_is_iri_test (rhs->dfe_tree)
       || (DFE_BOP == rhs->dfe_type && rhs->_.bin.right && st_is_iri_test (rhs->_.bin.right->dfe_tree)))
   return 1;
@@ -344,7 +350,7 @@ jp_fanout (join_plan_t * jp)
 	{
 	  if (DFE_BOP_PRED == is_o->dfe_type && 1 == is_o->_.bin.is_in_list)
 	    {
-	      ST ** in_list = sqlo_in_list (is_o, NULL, NULL);
+	      df_elt_t **in_list = sqlo_in_list (is_o, NULL, NULL);
 	      misc_card *= BOX_ELEMENTS (in_list) - 1;
 	    }
 	  return jp->jp_fanout = (p_stat[0] / o_card) * misc_card;
@@ -582,8 +588,10 @@ dfe_jp_fill (sqlo_t * so, op_table_t * ot, df_elt_t * tb_dfe, join_plan_t * jp, 
   }
   END_DO_SET ();
   jp->jp_fanout = jp_fanout (jp);
+#if 0
   if (jp->jp_fanout < 0 && jp->jp_fanout != -1)
     bing ();
+#endif
 }
 
 
@@ -955,7 +963,7 @@ sqlo_hash_fill_join (sqlo_t * so, df_elt_t * hash_ref_tb, df_elt_t ** fill_ret, 
 	  t_listst (3, TABLE_REF, t_listst (6, TABLE_DOTTED, tb_dfe->_.table.ot->ot_table->tb_name,
 	      tb_dfe->_.table.ot->ot_new_prefix, NULL, NULL, tb_dfe->_.table.ot->ot_opts), NULL);
       END_DO_BOX;
-      sel = t_box_copy_tree (sel);
+      sel = (ST *) t_box_copy_tree ((caddr_t) sel);
       sqlo_scope (so, &sel);
       fill_dfe = sqlo_df (so, sel);
       fill_dfe->dfe_super = hash_ref_tb;

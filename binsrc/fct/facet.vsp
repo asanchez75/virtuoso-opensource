@@ -1,16 +1,15 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html
-     PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
-    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<!DOCTYPE html>
+<html lang="en">
 <head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
 <title>Precision Search &amp; Find</title>
 
 <?vsp
   declare main_ss varchar;
   declare  pageUrl, query_str varchar;
   main_ss := registry_get ('fct_main_ss');
-  if (not isstring (main_ss)) main_ss := 'styles/default.css';
+  if (not isstring (main_ss)) main_ss := '/fct/css/default.css';
 
   pageUrl := http_path();
   query_str := '';
@@ -31,7 +30,7 @@
     pageUrl := pageUrl || '?' || query_str;
 
 ?>
-  <link rel="stylesheet" type="text/css" href="<?=main_ss?>"  charset="utf-8" />
+  <link rel="stylesheet" type="text/css" href="<?=main_ss?>" />
 
 <?vsp
   fct_gen_opensearch_link();
@@ -41,7 +40,7 @@
     var featureList=["map", "combolist", "ajax", "tab", "json", "location"];
 </script>
 <script type="text/javascript" src="oat/toolkit/loader.js"></script>
-<script type="text/javascript" src="facet.js"></script>
+<script type="text/javascript" src="/fct/js/facet.js"></script>
 
 <?vsp
   declare sid, _S, ses_parms varchar;
@@ -75,7 +74,7 @@
 
   connection_set ('fct_dbg_mode', dbg_mode);
 
-  if (dbg_mode := 'page')
+  if (dbg_mode = 'page')
     {
       dbg_out := string_output();
       connection_set ('__fct_dbg_out', dbg_out);
@@ -85,6 +84,11 @@
 --  dbg_obj_print (lines);
 
 ?>
+
+<link rel="icon" href="/favicon.ico?v=1" sizes="any" />
+<link rel="icon" href="/favicon/favicon.svg?v=1" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/favicon/apple-touch-icon-180x180.png?v=1" />
+<link rel="manifest" href="/favicon/manifest.webmanifest?v=1" />
 
 </head>
 <body>
@@ -103,7 +107,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -226,6 +230,8 @@ footer:;
 <?vsp fct_render_dbg_out ();?>
 </div>
 <?vsp } ?>
+  
+<?vsp fct_cctr(); ?>
 
 </div><!-- #MD -->
 <div id="FT">

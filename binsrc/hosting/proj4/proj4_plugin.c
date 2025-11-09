@@ -2,7 +2,7 @@
  *  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
  *  project.
  *
- *  Copyright (C) 1998-2021 OpenLink Software
+ *  Copyright (C) 1998-2025 OpenLink Software
  *
  *  This project is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -25,7 +25,7 @@
 #include "geo.h"
 #include "import_gate_virtuoso.h"
 
-#define PLUGIN_VERSION "1.0"
+#define PLUGIN_VERSION "1.1"
 
 query_t *srid_to_proj4_string_qr = NULL;
 id_hash_t *virt_proj4_sr_iri_to_srid = NULL;
@@ -117,7 +117,7 @@ virt_proj4_find_pj_by_srid_or_string (caddr_t * qst, caddr_t *err_ret, int srid,
     rwlock_unlock (srid_to_pj_htable->ht_rwlock);
   parms = dk_alloc_list (2);
   parms[0] = box_dv_uname_string (":0");
-  parms[1] = boxed_srid;
+  parms[1] = box_copy(boxed_srid);
   err = qr_exec (
     ((query_instance_t *)qst)->qi_client, srid_to_proj4_string_qr, CALLER_LOCAL, NULL, NULL, &lc, parms, NULL, 1);
   dk_free_box ((caddr_t)parms);
@@ -226,7 +226,9 @@ virt_proj4_geo_transform (projPJ orig_pj, projPJ dest_pj, geo_t *g, int orig_deg
     }
   switch (GEO_TYPE_CORE (flags))
     {
-    case GEO_NULL_SHAPE: case GEO_BOX:
+    case GEO_NULL_SHAPE: 
+      return NULL;
+    case GEO_BOX:
       XYBOX_PROJECT(g->XYbox, g->_.point.point_ZMbox);
       return NULL;
     case GEO_POINT:
@@ -451,7 +453,7 @@ virt_proj4_postponed_action (char *mode)
 }
 
 static void
-virt_proj4_plugin_connect ()
+virt_proj4_plugin_connect (void *appdata)
 {
   proj4_string_to_pj_htable = (id_hash_t *)box_dv_dict_hashtable (31);
   proj4_string_to_pj_htable->ht_rehash_threshold = 120;

@@ -4,7 +4,7 @@
 --  This file is part of the OpenLink Software Virtuoso Open-Source (VOS)
 --  project.
 --
---  Copyright (C) 1998-2021 OpenLink Software
+--  Copyright (C) 1998-2025 OpenLink Software
 --
 --  This project is free software; you can redistribute it and/or modify it
 --  under the terms of the GNU General Public License as published by the
@@ -475,7 +475,7 @@ create procedure XML_URI_PARSE_VIRT (in base_uri varchar, inout table_name varch
 
 create procedure XML_URI_GET (in base_uri varchar, in rel_uri varchar)
 {
-  declare head, str, proto varchar;
+  declare head, str, proto, accept varchar;
   declare inx, timeout integer;
   declare s_uri any;
   -- dbg_obj_princ ('XML_URI_GET (', base_uri, rel_uri, ')');
@@ -485,6 +485,9 @@ create procedure XML_URI_GET (in base_uri varchar, in rel_uri varchar)
     base_uri := charset_recode (base_uri, '_WIDE_', 'UTF-8');
   else
     base_uri := charset_recode (base_uri, NULL, 'UTF-8');
+  accept := connection_get ('__XML_URI_GET_ACCEPT', null);
+  if (accept is not null)
+    accept := concat ('Accept:', accept);
 again:
   s_uri := rfc1808_parse_uri (base_uri);
   str := null;
@@ -527,10 +530,10 @@ try_http_get:
 	}
       else if (proto = 'https' or (length (hcli_uid) and length (hcli_pwd)) or (timeout is not null and timeout > 0))
         {
-	  str := http_client_ext (url=>base_uri, uid=>hcli_uid, pwd=>hcli_pwd, headers=>head, timeout=>timeout, n_redirects=>15);
+	  str := http_client_ext (url=>base_uri, uid=>hcli_uid, pwd=>hcli_pwd, headers=>head, timeout=>timeout, n_redirects=>15, http_headers=>accept);
  	}
       else
-        str := http_client_ext (url=>base_uri, headers=>head, n_redirects=>15);
+        str := http_client_ext (url=>base_uri, headers=>head, n_redirects=>15, http_headers=>accept);
       if (aref (head, 0) not like '% 200%')
 	signal ('H0001', concat ('HTTP request failed: ', aref (head, 0), 'for URI ', base_uri));
     }
@@ -3177,7 +3180,10 @@ create procedure DB.DBA.HTTP_CLIENT (
     in proxy varchar := null,
     in ca_certs varchar := null,
     in insecure int := 0,
-    in n_redirects int := 0
+    in n_redirects int := 0,
+    in event_callback varchar := null,
+    in event_callback_args any := null,
+    in accept_cookies int := 0
   )
 {
 
@@ -3189,7 +3195,8 @@ create procedure DB.DBA.HTTP_CLIENT (
       if (length (http_headers))
         http_headers := http_headers || '\r\n';
     }
-  return http_client_internal (url, uid, pwd, http_method, http_headers, body, cert_file, cert_pwd, null, timeout, proxy, ca_certs, insecure, n_redirects);
+  return http_client_internal (url, uid, pwd, http_method, http_headers, body, cert_file, cert_pwd, null,
+      timeout, proxy, ca_certs, insecure, n_redirects, event_callback, event_callback_args, accept_cookies);
 }
 ;
 
@@ -3208,7 +3215,10 @@ create procedure DB.DBA.HTTP_CLIENT_EXT (
     in proxy varchar := null,
     in ca_certs varchar := null,
     in insecure int := 0,
-    in n_redirects int := 0
+    in n_redirects int := 0,
+    in event_callback varchar := null,
+    in event_callback_args any := null,
+    in accept_cookies int := 0
   )
 {
 
@@ -3220,7 +3230,8 @@ create procedure DB.DBA.HTTP_CLIENT_EXT (
       if (length (http_headers))
         http_headers := http_headers || '\r\n';
     }
-  return http_client_internal (url, uid, pwd, http_method, http_headers, body, cert_file, cert_pwd, headers, timeout, proxy, ca_certs, insecure, n_redirects);
+  return http_client_internal (url, uid, pwd, http_method, http_headers, body, cert_file, cert_pwd, headers,
+      timeout, proxy, ca_certs, insecure, n_redirects, event_callback, event_callback_args, accept_cookies);
 }
 ;
 
@@ -4473,6 +4484,8 @@ create procedure REGEXP_REPLACE (in source_string any, in pattern any,
     return source_string;
   if (match_parameter is null)
     match_parameter := '';
+  if (position < 1)
+    position := 1;
   if (iswidestring (source_string) or iswidestring (pattern) or iswidestring (replace_string))
     {
       if (iswidestring (source_string))
@@ -4734,7 +4747,6 @@ HTTP_GET_HOST ()
 }
 ;
 
---!AWK PUBLIC
 create procedure
 date_rfc1123 (in dt datetime)
 {
@@ -4742,7 +4754,6 @@ date_rfc1123 (in dt datetime)
 }
 ;
 
---!AWK PUBLIC
 create procedure
 date_iso8601 (in dt datetime)
 {
@@ -5188,7 +5199,7 @@ create procedure cl_new_db ()
   cl_wait_start ();
   log_message ('new clustered database:Init of RDF');
   rdf_dpipes ();
-  rdf_cl_init ();
+  DB.DBA.RDF_CL_INIT ();
   DB.DBA.RDF_CREATE_SPARQL_ROLES_CL ();
   WS.WS.SYS_DAV_INIT ();
   cl_exec ('checkpoint');
@@ -5345,32 +5356,69 @@ DB.DBA.SYS_SQL_VECTOR_PRINT (in in_vector any)
 }
 ;
 
+create procedure DB.DBA.SYS_SQL_UDT_PRINT (in udt any, in inner_call int := 0)
+{
+  declare fields, type_name, vec any;
+  fields := udt_get_info (udt, 'attributes');
+  type_name := udt_instance_of (udt);
+  vec := null;
+  foreach (varchar field in fields) do
+    {
+      declare v, jv any;
+      v := udt_get (udt, field);
+      if (__tag (v) = 254 or __tag (v) = 206)
+        jv := DB.DBA.SYS_SQL_UDT_PRINT (v, 1);
+      else
+        jv := v;
+      if (vec is null)
+        vec := soap_box_structure (field, jv);
+      else
+        vec := vector_concat (vec, vector (field, jv));
+    }
+  if (inner_call)
+    return soap_box_structure (type_name, vec);
+  return DB.DBA.OBJ2JSON(soap_box_structure (type_name, vec));
+}
+;
+
 create procedure
 DB.DBA.SYS_SQL_VAL_PRINT (in v any)
 {
   --no_c_escapes-
-  if (isstring (v) or __tag (v) = 183 or __tag (v) = 127)
+  if (isstring (v) or __tag (v) = 183 or __tag (v) = 127 or __tag (v) = 217)
     return sprintf ('\'%S\'', replace (cast (v as varchar), '\\', '\\\\'));
   else if (v is null)
     return 'NULL';
   else if (isinteger (v))
-    return sprintf ('%d', v);
+    return sprintf ('%ld', v);
   else if (isfloat (v) or isdouble (v))
     return sprintf ('%f', v);
   else if (isnumeric (v))
     return cast (v as varchar);
   else if (__tag (v) = __tag of vector)
     return concat ('vector (',SYS_SQL_VECTOR_PRINT (v),')');
-  else if (__tag (v) = 211)
+  else if (__tag (v) = 195)
+    return concat ('dvector (',SYS_SQL_VECTOR_PRINT (v),')');
+  else if (__tag (v) = 209)
+    return concat ('lvector (',SYS_SQL_VECTOR_PRINT (v),')');
+  else if (__tag (v) = 202)
+    return concat ('fvector (',SYS_SQL_VECTOR_PRINT (v),')');
+  else if (__tag (v) = __tag of datetime)
     return sprintf ('{ts ''%s''}', datestring (v));
   else if (__tag (v) = __tag of nvarchar)
     return sprintf ('N\'%S\'', replace (charset_recode (v, '_WIDE_', 'UTF-8'), '\\', '\\\\'));
   else if (isiri_id (v))
-    return sprintf ('__id2i (\'%s\')', __id2i (v));
+    return sprintf ('__i2id (%s)', DB.DBA.SYS_SQL_VAL_PRINT (__id2i (v)));
   else if (__tag of rdf_box = __tag (v))
     return sprintf ('rdf_box (0, 257, 257, %d, 0)', rdf_box_ro_id (v));
+  else if (__tag (v) = 254 or __tag (v) = 206)
+    return SYS_SQL_UDT_PRINT (v);
   else if (__tag (v) = 255)
     return '<tag 255>';
+  else if (__tag (v) = __tag of varbinary)
+    return sprintf ('hex2bin (\'%s\')', bin2hex (v));
+  else if (__tag (v) = __tag of xml)
+    return SYS_SQL_VAL_PRINT(serialize_to_UTF8_xml (v));
   else
     signal ('22023', sprintf('Unsupported type %d', __tag (v)));
 }
@@ -5705,10 +5753,43 @@ select k.KEY_TABLE as "TABLE",
 grant select on DB.DBA.TABLE_COLS to public
 ;
 
-create procedure csv_load_file (in f varchar, in _from int := 0, in _to int := null, in tb varchar := null, in log_mode int := 2, in opts any := null)
+create procedure csv_file_open (
+  in f varchar,
+  in isDAV integer := 0,
+  in auth_uname varchar := null,
+  in auth_pwd varchar := null)
+{
+  declare rc, s, t any;
+
+  if (isDAV)
+  {
+    s := string_output ();
+    rc := DB.DBA.DAV_RES_CONTENT_STRSES (f, s, t, auth_uname, auth_pwd);
+    if (DAV_HIDE_ERROR (rc) is null)
+      signal ('22023', 'DAV resource "' || f || '" read error: ' || DAV_PERROR (rc));
+  }
+  else
+  {
+    s := file_open (f);
+  }
+  return s;
+}
+;
+
+create procedure csv_load_file (
+  in f varchar,
+  in _from integer := 0,
+  in _to integer := null,
+  in tb varchar := null,
+  in log_mode integer := 2,
+  in opts any := null,
+  in isDAV integer := 0,
+  in auth_uname varchar := null,
+  in auth_pwd varchar := null)
 {
   declare s any;
-  declare log_error int;
+  declare log_error integer;
+
   log_error := 0;
   if (isvector (opts) and mod (length (opts), 2) = 0)
     {
@@ -5716,36 +5797,48 @@ create procedure csv_load_file (in f varchar, in _from int := 0, in _to int := n
     }
   if (log_error)
     log_message (sprintf ('CSV import: importing file: %s', f));
-  s := file_open (f);
+
+  s := csv_file_open (f, isDAV, auth_uname, auth_pwd);
   return csv_load (s, _from, _to, tb, log_mode, opts);
 }
 ;
 
-create procedure csv_load (in s any, in _from int := 0, in _to int := null, in tb varchar := null, in log_mode int := 2, in opts any := null)
+create procedure csv_load (
+  in s any,
+  in _from integer := 0,
+  in _to integer := null,
+  in tb varchar := null,
+  in log_mode integer := 2,
+  in opts any := null)
 {
   declare r, log_ses any;
   declare stmt, enc varchar;
-  declare inx, old_mode, num_cols, nrows, mode, log_error, import_first_n_cols int;
+  declare inx, old_mode, num_cols, nrows, mode, log_error, import_first_n_cols integer;
   declare delim, quot char;
+  declare stat, message varchar;
 
   if (1 = sys_stat ('enable_vec') and not is_atomic ())
     {
       return csv_vec_load (s, _from, _to, tb, log_mode, opts);
     }
 
-  delim := quot := enc := mode := null;
+  delim := null;
+  quot := null;
+  enc := null;
+  mode := null;
   log_error := 0;
+  import_first_n_cols := 0;
   if (isvector (opts) and mod (length (opts), 2) = 0)
     {
       delim := get_keyword ('csv-delimiter', opts);
       quot  := get_keyword ('csv-quote', opts);
       enc := get_keyword ('encoding', opts);
       mode := get_keyword ('mode', opts);
-      log_error := get_keyword ('log', opts, 0);
-      import_first_n_cols := get_keyword ('lax', opts, 0);
+      log_error := get_keyword ('log', opts, log_error);
+      import_first_n_cols := get_keyword ('lax', opts, import_first_n_cols);
     }
 
-  stmt := csv_ins_stmt (tb, num_cols);
+  stmt := csv_ins_stmt (tb, num_cols, opts);
   old_mode := log_enable (log_mode, 1);
   inx := 0;
   nrows  := 0;
@@ -5756,9 +5849,9 @@ create procedure csv_load (in s any, in _from int := 0, in _to int := null, in t
 	{
 	  if (import_first_n_cols and length (r) > num_cols)
             r := subseq (r, 0, num_cols);
+
 	  if (length (r) = num_cols)
 	    {
-	      declare stat, message varchar;
 	      stat := '00000';
 	      exec (stmt, stat, message, r, vector ('max_rows', 0, 'use_cache', 1));
 	      if (stat <> '00000')
@@ -5769,20 +5862,22 @@ create procedure csv_load (in s any, in _from int := 0, in _to int := null, in t
 		    }
 		  else
 		    {
-		  log_message (sprintf ('CSV import: error importing row: %d', inx));
-		  log_message (message);
-		}
+		      log_message (sprintf ('CSV import: error importing row: %d', inx));
+		      log_message (message);
+		    }
 		}
 	      else
-		nrows := nrows + 1;
-	    }
+                {
+		  nrows := nrows + 1;
+	        }
+            }
 	  else
 	    {
 	      if (log_error)
 		http (sprintf ('<error line="%d">different number of columns</error>', inx), log_ses);
 	      else
-	    log_message (sprintf ('CSV import: wrong number of values at line: %d', inx));
-	}
+	       log_message (sprintf ('CSV import: wrong number of values at line: %d', inx));
+	   }
 	}
       if (inx > _to)
 	goto end_loop;
@@ -5792,17 +5887,27 @@ create procedure csv_load (in s any, in _from int := 0, in _to int := null, in t
   log_enable (old_mode, 1);
   if (log_error)
     return vector (nrows, log_ses);
+
   return nrows;
 }
 ;
 
-create procedure csv_parse (in s any, in cb varchar, inout cbd any, in _from int := 0, in _to int := null, in opts any := null)
+create procedure csv_parse (
+  in s any,
+  in cb varchar,
+  inout cbd any,
+  in _from integer := 0,
+  in _to integer := null,
+  in opts any := null)
 {
   declare r any;
-  declare inx, mode int;
+  declare inx, mode integer;
   declare delim, quot, enc char;
 
-  delim := quot := enc := mode := null;
+  delim := null;
+  quot := null;
+  enc := null;
+  mode := null;
   if (isvector (opts) and mod (length (opts), 2) = 0)
     {
       delim := get_keyword ('csv-delimiter', opts);
@@ -5821,21 +5926,30 @@ create procedure csv_parse (in s any, in cb varchar, inout cbd any, in _from int
 	goto end_loop;
     }
   end_loop:;
+
   return inx;
 }
 ;
 
-create procedure csv_ins_stmt (in tb varchar, out num_cols int, in col_opts any := null)
+create procedure csv_ins_stmt (
+  in tb varchar,
+  out num_cols integer,
+  in col_opts any := null,
+  in ops any := null)
 {
   declare ss any;
-  declare cols, cvt any;
-  declare i int;
+  declare cols, cvt, mode any;
+  declare i integer;
+
   tb := complete_table_name (tb, 0);
   cols := vector ();
   cvt := vector ();
-  for select "COLUMN" as col from SYS_COLS where "TABLE" = tb and "COLUMN" <> '_IDN' and COL_CHECK <> 'I' order by COL_ID do
+  mode := get_keyword ('insertMode', opts, 'INTO');
+
+  for (select "COLUMN" as col from DB.DBA.SYS_COLS where "TABLE" = tb and "COLUMN" <> '_IDN' and COL_CHECK <> 'I' order by COL_ID) do
     {
       declare opt any;
+
       opt := get_keyword (col, col_opts);
       if ('exclude'= opt)
       goto nextc;
@@ -5845,12 +5959,9 @@ create procedure csv_ins_stmt (in tb varchar, out num_cols int, in col_opts any 
     }
   if (length (cols) = 0)
     signal ('22023', 'No such table');
+
   ss := string_output ();
-  http (sprintf ('INSERT INTO "%I"."%I"."%I" (',
-	  name_part (tb, 0),
-	  name_part (tb, 1),
-	  name_part (tb, 2)
-	  ), ss);
+  http (sprintf ('INSERT %s "%I"."%I"."%I" (', mode, name_part (tb, 0), name_part (tb, 1), name_part (tb, 2)), ss);
   for (i := 0; i < length (cols); i := i + 1)
     {
        http (sprintf ('"%I" ', cols[i]), ss);
@@ -5866,17 +5977,27 @@ create procedure csv_ins_stmt (in tb varchar, out num_cols int, in col_opts any 
     }
   http (')', ss);
   num_cols := length (cols);
+
   return string_output_string (ss);
 }
 ;
 
-create procedure csv_file_header_check (in f any, in num_to_check int := 10, in opts any := null)
+create procedure csv_file_header_check (
+  in f any,
+  in num_to_check integer := 10,
+  in opts any := null,
+  in isDAV integer := 0,
+  in auth_uname varchar := null,
+  in auth_pwd varchar := null)
 {
-  declare h, r, s, i any;
+  declare s, h, r, i any;
   declare delim, quot, enc char;
-  declare mode int;
+  declare mode integer;
 
-  delim := quot := enc := mode := null;
+  delim := null;
+  quot := null;
+  enc := null;
+  mode := null;
   if (isvector (opts) and mod (length (opts), 2) = 0)
     {
       delim := get_keyword ('csv-delimiter', opts);
@@ -5884,7 +6005,7 @@ create procedure csv_file_header_check (in f any, in num_to_check int := 10, in 
       enc := get_keyword ('encoding', opts);
       mode := get_keyword ('mode', opts);
     }
-  s := file_open (f);
+  s := csv_file_open (f, isDAV, auth_uname, auth_pwd);
   h := get_csv_row (s, delim, quot, enc, mode);
   if (not isvector (h))
     return 0;
@@ -5894,61 +6015,88 @@ create procedure csv_file_header_check (in f any, in num_to_check int := 10, in 
       if (not isvector (r) or length (r) <> length (h))
 	return 0;
     }
+
   return h;
 }
 ;
 
-create procedure csv_table_def (in f varchar, in tb_name varchar := null, in opts any := null)
+create procedure csv_table_def (
+  in f varchar,
+  in tb_name varchar := null,
+  in opts any := null,
+  in isDAV integer := 0,
+  in auth_uname varchar := null,
+  in auth_pwd varchar := null)
 {
   declare head any;
-  declare s, r, ss any;
-  declare i int;
+  declare s, r, ss, pk any;
+  declare i integer;
   declare delim, quot, enc char;
-  declare mode, to_check int;
+  declare mode, to_check, pk_col_pos integer;
 
-  delim := quot := enc := mode := null;
+  delim := null;
+  quot := null;
+  enc := null;
+  mode := null;
   to_check := 10;
+  pk_col_pos := 0;
   if (isvector (opts) and mod (length (opts), 2) = 0)
     {
       delim := get_keyword ('csv-delimiter', opts);
       quot  := get_keyword ('csv-quote', opts);
       enc := get_keyword ('encoding', opts);
       mode := get_keyword ('mode', opts);
-      to_check := get_keyword ('max-rows', opts, 10);
+      to_check := get_keyword ('max-rows', opts, to_check);
+      pk_col_pos := get_keyword ('pk-col-pos', opts, pk_col_pos);
     }
 
-  if (not csv_file_header_check (f, to_check, opts))
+  if (not csv_file_header_check (f, to_check, opts, isDAV, auth_uname, auth_pwd))
     signal ('22023', 'Cannot guess the table definition');
 
   if (tb_name is null)
     tb_name := SYS_ALFANUM_NAME (f);
+
   tb_name := complete_table_name (tb_name, 1);
-  s := file_open (f);
+  s := csv_file_open (f, isDAV, auth_uname, auth_pwd);
   head := get_csv_row (s, delim, quot, enc, mode);
   r := get_csv_row (s, delim, quot, enc, mode);
   ss := string_output ();
   http (sprintf ('CREATE TABLE "%I"."%I"."%I" ( \n', name_part (tb_name, 0), name_part (tb_name, 1), name_part (tb_name, 2)), ss);
+  pk := '';
   for (i := 0; i < length (head) and isstring (head[i]); i := i + 1)
     {
-       declare tp any;
-       if (r[i] is null)
-         tp := 'VARCHAR';
-       else
-         tp := dv_type_title (__tag (r[i]));
-       http (sprintf ('\t"%I" %s', SYS_ALFANUM_NAME (head[i]), tp), ss);
-       if (i < length (head) - 1 and isstring (head[i + 1]))
-         http (', \n', ss);
+      declare tp, cname any;
+      if (r[i] is null)
+        tp := 'VARCHAR';
+      else
+       tp := dv_type_title (__tag (r[i]));
+      cname := SYS_ALFANUM_NAME (head[i]);
+      if (isvector (pk_col_pos) and (i+1) in (pk_col_pos))
+      {
+	if (pk = '')
+	  pk := ' PRIMARY KEY (';
+
+	pk := pk || sprintf ('"%I"', cname) || ',';
+      }
+      http (sprintf ('\t"%I" %s', cname, tp), ss);
+      if (i < length (head) - 1 and isstring (head[i + 1]))
+       http (', \n', ss);
     }
+  if (pk <> '')
+    pk := ',' || rtrim (pk, ',') || ')';
+
+  http (pk, ss);
   http (')', ss);
   return string_output_string (ss);
 }
 ;
 
-create procedure csv_cols_def (in f varchar)
+create procedure csv_cols_def (
+  in f varchar)
 {
   declare head any;
   declare s, r, ss, vec any;
-  declare i int;
+  declare i integer;
 
   if (not csv_file_header_check (f))
     signal ('22023', 'Cannot guess the table definition');
@@ -5965,17 +6113,26 @@ create procedure csv_cols_def (in f varchar)
 }
 ;
 
-
-
-create procedure csv_vec_load (in s any, in _from int := 0, in _to int := null, in tb varchar := null, in log_mode int := 2, in opts any := null, in cols any := null)
+create procedure csv_vec_load (
+  in s any,
+  in _from integer := 0,
+  in _to integer := null,
+  in tb varchar := null,
+  in log_mode integer := 2,
+  in opts any := null,
+  in cols any := null)
 {
   declare r, log_ses, vecarr any;
   declare stmt, enc, pname, stat, msg varchar;
-  declare inx, old_mode, num_cols, nrows, mode, log_error, import_first_n_cols, fill, txn, deadl int;
+  declare inx, old_mode, num_cols, nrows, mode, log_error, import_first_n_cols, fill, txn, deadl integer;
   declare delim, quot char;
 
-  delim := quot := enc := mode := null;
+  delim := null;
+  quot := null;
+  enc := null;
+  mode := null;
   log_error := 0;
+  import_first_n_cols := 0;
   txn := 1;
   if (isvector (opts) and mod (length (opts), 2) = 0)
     {
@@ -5983,12 +6140,12 @@ create procedure csv_vec_load (in s any, in _from int := 0, in _to int := null, 
       quot  := get_keyword ('csv-quote', opts);
       enc := get_keyword ('encoding', opts);
       mode := get_keyword ('mode', opts);
-      log_error := get_keyword ('log', opts, 0);
-      import_first_n_cols := get_keyword ('lax', opts, 0);
-      txn := get_keyword ('txn', opts, 1);
+      log_error := get_keyword ('log', opts, log_error);
+      import_first_n_cols := get_keyword ('lax', opts, import_first_n_cols);
+      txn := get_keyword ('txn', opts, txn);
     }
 
-  stmt := csv_vec_ins_stmt (tb, num_cols, pname, cols);
+  stmt := csv_vec_ins_stmt (tb, num_cols, pname, cols, opts);
   deadl := 0;
   again:
   stat := '00000';
@@ -6037,24 +6194,24 @@ create procedure csv_vec_load (in s any, in _from int := 0, in _to int := null, 
 	goto end_loop;
       if (fill >= length (vecarr))
 	{
-	  declare stat, message varchar;
 	  stat := '00000';
-          call (pname) (vecarr, fill);
-	  --exec (sprintf ('%s (?, ?)', pname), stat, message, vector (vecarr, fill), vector ('max_rows', 0, 'use_cache', 1));
+          exec (sprintf ('%s (?, ?)', pname), stat, msg, vector (vecarr, fill), vector ('max_rows', 0, 'use_cache', 1));
 	  if (stat <> '00000')
 	    {
 	      if (log_error)
 		{
-		  http (sprintf ('<error line="%d"><![CDATA[%s]]></error>', inx, message), log_ses);
+		  http (sprintf ('<error line="%d"><![CDATA[%s]]></error>', inx, msg), log_ses);
 		}
 	      else
 		{
 		  log_message (sprintf ('CSV import: error importing row: %d', inx));
-		  log_message (message);
+		  log_message (msg);
 		}
 	    }
 	  else
-	    nrows := nrows + fill;
+            {
+	      nrows := nrows + fill;
+            }
 	  fill := 0;
 	}
       inx := inx + 1;
@@ -6063,24 +6220,24 @@ create procedure csv_vec_load (in s any, in _from int := 0, in _to int := null, 
 
   if (fill > 0)
     {
-      declare stat, message varchar;
       stat := '00000';
-      call (pname) (vecarr, fill);
-      -- exec (sprintf ('%s (?, ?)', pname), stat, message, vector (vecarr, fill), vector ('max_rows', 0, 'use_cache', 1));
+      exec (sprintf ('%s (?, ?)', pname), stat, msg, vector (vecarr, fill), vector ('max_rows', 0, 'use_cache', 1));
       if (stat <> '00000')
 	{
 	  if (log_error)
 	    {
-	      http (sprintf ('<error line="%d"><![CDATA[%s]]></error>', inx, message), log_ses);
+	      http (sprintf ('<error line="%d"><![CDATA[%s]]></error>', inx, msg), log_ses);
 	    }
 	  else
 	    {
 	      log_message (sprintf ('CSV import: error importing row: %d', inx));
-	      log_message (message);
+	      log_message (msg);
 	    }
 	}
       else
-	nrows := nrows + fill;
+        {
+	  nrows := nrows + fill;
+        }
     }
 
   log_enable (old_mode, 1);
@@ -6099,39 +6256,51 @@ create procedure csv_vec_load (in s any, in _from int := 0, in _to int := null, 
     }
   if (log_error)
     return vector (nrows, log_ses);
+
   return nrows;
 }
 ;
 
-
-create procedure csv_col_cast (inout cols any, inout cvt any, in i int)
+create procedure csv_col_cast (
+  inout cols any,
+  inout cvt any,
+  in i integer)
 {
  return replace (cvt[i], '{}', sprintf ('%I_vi', cols[i]));
 }
 ;
 
-create procedure csv_vec_ins_stmt (in tb varchar, out num_cols int, out pname varchar, in col_opts any)
+create procedure csv_vec_ins_stmt (
+  in tb varchar,
+  out num_cols integer,
+  out pname varchar,
+  in col_opts any,
+  in opts any := null)
 {
   declare ss any;
-  declare cols, cvt any;
-  declare i int;
+  declare cols, cvt, mode any;
+  declare i integer;
+
   tb := complete_table_name (tb, 0);
   cols := vector ();
- cvt := vector ();
+  cvt := vector ();
+  mode := get_keyword ('insertMode', opts, 'INTO');
+
   for select "COLUMN" as col from SYS_COLS where "TABLE" = tb and "COLUMN" <> '_IDN' and COL_CHECK <> 'I' order by COL_ID do
     {
       declare opt any;
       opt := get_keyword (col, col_opts);
       if ('exclude' = opt)
 	goto next;
+
       cols := vector_concat (cols, vector (col));
       cvt := vector_concat (cvt, vector (opt));
     next: ;
     }
   if (length (cols) = 0)
     signal ('22023', 'No such table');
-  ss := string_output ();
 
+  ss := string_output ();
   pname := sprintf ('"%I"."%I"."%I_CSV_VEC_INS_%d"',
 	  name_part (tb, 0),
 	  name_part (tb, 1),
@@ -6147,7 +6316,7 @@ create procedure csv_vec_ins_stmt (in tb varchar, out num_cols int, out pname va
      }
 
   -- prepare vectors
-  http ('   for (declare i int, i := 0; i < fill; i := i + 1) \n   {\n', ss);
+  http ('   for (declare i integer, i := 0; i < fill; i := i + 1) \n   {\n', ss);
 
   for (i := 0; i < length (cols); i := i + 1)
      {
@@ -6165,10 +6334,8 @@ create procedure csv_vec_ins_stmt (in tb varchar, out num_cols int, out pname va
        if (i < length (cols) - 1)
          http (', ', ss);
      }
-
   http (')\n  {\n', ss);
-
-  http (sprintf ('   INSERT INTO "%I"."%I"."%I" (',
+  http (sprintf ('   INSERT %s "%I"."%I"."%I" (', mode,
 	  name_part (tb, 0),
 	  name_part (tb, 1),
 	  name_part (tb, 2)
@@ -6185,8 +6352,8 @@ create procedure csv_vec_ins_stmt (in tb varchar, out num_cols int, out pname va
       if (cvt[i])
 	http (csv_col_cast (cols, cvt, i), ss);
       else
-       http (sprintf ('"%I_VI"', cols[i]), ss);
-       if (i < length (cols) - 1)
+        http (sprintf ('"%I_VI"', cols[i]), ss);
+      if (i < length (cols) - 1)
          http (', ', ss);
     }
   http (');', ss);
@@ -6223,5 +6390,90 @@ create procedure elarestore (in p varchar := 'ela')
     {
       cl_slice_from_log (sprintf ('%s.%d.trx', p, s), sprintf ('ELASTIC.%d', s));
     }
+}
+;
+
+--
+-- Function to replace http_proxy, must be called in HTTP/HTTPS context
+-- Parameters:
+--   url - target URL
+--   params - request parameters
+---          if no 'content' parameter given, will try to get request body from HTTP session
+--   in_headers - HTTP headers for request
+--
+--   return - no value, the origin response will be sent back to current HTTP client connection
+--
+
+--!AWK PLBIF http_proxy_v2
+create procedure DB.DBA.HTTP_PROXY_V2 (in url varchar, in params any, in in_headers any)
+{
+  declare out_headers, in_header, out_header, content, out_content, meth varchar;
+  declare inx, len, is_post integer;
+  if (not is_http_ctx())
+    signal ('42000', 'HTPRX1', 'The http_proxy_v2 must be called in HTTP context');
+  if (url is null)
+    url := get_keyword ('url', params);
+  content := http_body_read ();
+  --dbg_obj_print_vars (params, url, in_headers, string_output_string (content));
+  if (length (in_headers) = 0)
+    meth := 'GET';
+  else
+    meth := subseq (in_headers[0], 0, strchr (in_headers[0], ' '));
+  len := length (in_headers);
+  in_header := '';
+  is_post := 0;
+  for (inx := 1; inx < len; inx := inx + 1)
+     {
+	declare line varchar;
+        line := in_headers [inx];
+        if (lower (line) not like 'host:%' and lower (line) not like 'content-length:%')
+          in_header := in_header || line;
+        if (lower (line) like 'content-type:%' and lower (line) like '%application/x-www-form-urlencoded%')
+          is_post := 1;
+     }
+  --dbg_obj_print_vars (url, meth, in_header);
+  if (length (content) = 0 and is_post)
+    {
+      declare first int;
+      content := string_output ();
+      len := length (params);
+      first := 1;
+      for (inx := 0; inx < len; inx := inx + 2)
+         {
+            declare name, value varchar;
+            name := params[inx];
+            value := params[inx + 1];
+            if (name = 'content')
+              {
+                http (value, content);
+              }
+            else if (name <> 'url')
+	      {
+		if (not first)
+		  http ('&');
+		first := 0;
+		http (sprintf ('%U=%U', name, value), content); 
+	      }
+         }
+    }
+  --dbg_obj_print_vars (string_output_string (content));
+  out_content := http_client_ext (url, http_method=>meth, http_headers=>in_header, body=>content, headers=>out_headers);
+  --dbg_obj_print_vars (out_headers, length (out_content));
+  http_request_status (rtrim (out_headers[0], '\r\n', ''));
+  out_header := '';
+  len := length (out_headers);
+  for (inx := 1; inx < len; inx := inx + 1)
+     {
+	declare line varchar;
+        line := out_headers [inx];
+        if (lower (line) not like 'server:%' 
+          and lower (line) not like 'connection:%'
+	  and not (meth <> 'HEAD' and lower (line) like 'content-length:%'))
+	out_header := out_header || line;
+     }
+  --dbg_obj_print_vars (out_header);
+  http_header (out_header);
+  http (out_content);
+  return; -- no empty line
 }
 ;
